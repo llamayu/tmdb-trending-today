@@ -113,6 +113,137 @@ const tagDisplayNameMap = {
     "new_episode": "New Episode"
 };
 
+/**
+ * Calculate the appropriate tag for a given movie ID.
+ * Mirrors the logic from the catalog handler.
+ */
+async function getMovieTag(movieId) {
+    const TODAY = new Date();
+    try {
+        const releaseData = await fetchTmdbJson(`https://api.themoviedb.org/3/movie/${movieId}/release_dates?api_key=${TMDB_API_KEY}`);
+
+        let earliestDigital = null, earliestPhysical = null, earliestTheatrical = null;
+
+        if (releaseData.results) {
+            const usData = releaseData.results.find(c => c.iso_3166_1 === 'US');
+            const globalDates = releaseData.results.flatMap(c => c.release_dates);
+
+            const findEarliest = (releases, types) => {
+                let earliest = null;
+                for (const r of releases) {
+                    if (types.includes(r.type)) {
+                        const d = parseLocal(r.release_date.substring(0, 10));
+                        if (!earliest || d < earliest) earliest = d;
+                    }
+                }
+                return earliest;
+            };
+
+            const usReleases = usData ? usData.release_dates : [];
+            earliestTheatrical = findEarliest(usReleases, [1, 2, 3]) || findEarliest(globalDates, [1, 2, 3]);
+            earliestDigital = findEarliest(usReleases, [4]) || findEarliest(globalDates, [4]);
+            earliestPhysical = findEarliest(usReleases, [5]) || findEarliest(globalDates, [5]);
+        }
+
+        const daysSincePhysical = (earliestPhysical && earliestPhysical <= TODAY) ? diffDays(TODAY, earliestPhysical) : null;
+        const daysSinceDigital = (earliestDigital && earliestDigital <= TODAY) ? diffDays(TODAY, earliestDigital) : null;
+
+        if (daysSincePhysical !== null && daysSincePhysical <= 14) {
+            return "out_on_bluray";
+        } else if (daysSinceDigital !== null && daysSinceDigital <= 14) {
+            return (earliestTheatrical && earliestTheatrical < earliestDigital) ? "just_added" : "now_streaming";
+        } else if (!earliestDigital || earliestDigital > TODAY) {
+            if (earliestDigital) {
+                const daysUntil = diffDays(earliestDigital, TODAY);
+                if (daysUntil <= 14) {
+                    return `coming_date_${formatFutureDate(earliestDigital).replace(' ', '_')}`;
+                }
+            }
+            return "coming_soon";
+        }
+    } catch (error) {
+        console.error(`Failed to get movie tag for ${movieId}:`, error);
+    }
+    return "none";
+}
+
+/**
+ * Calculate the appropriate tag for a given series ID.
+ * Mirrors the logic from the catalog handler.
+ */
+async function getSeriesTag(seriesId) {
+    const TODAY = new Date();
+    try {
+        const tvData = await fetchTmdbJson(`https://api.themoviedb.org/3/tv/${seriesId}?api_key=${TMDB_API_KEY}`);
+
+        let lastEp = tvData.last_episode_to_air;
+        let nextEp = tvData.next_episode_to_air;
+
+        if (nextEp && nextEp.air_date) {
+            const nextAirDate = parseLocal(nextEp.air_date);
+            if (nextAirDate <= TODAY) { lastEp = nextEp; nextEp = null; }
+        }
+
+        let isFinale = false;
+        if (lastEp) {
+            const currentSeason = tvData.seasons?.find(s => s.season_number === lastEp.season_number);
+            const expectedCount = currentSeason?.episode_count || 0;
+            isFinale = lastEp.episode_type === "finale" || (expectedCount > 0 && lastEp.episode_number >= expectedCount);
+        }
+
+        const firstAir = parseLocal(tvData.first_air_date);
+        const lastAir = lastEp?.air_date ? parseLocal(lastEp.air_date) : null;
+
+        let futureDate = null, isBrandNewSeries = false;
+
+        if (firstAir && firstAir > TODAY) {
+            futureDate = firstAir;
+            isBrandNewSeries = true;
+        } else if (nextEp && nextEp.episode_number === 1) {
+            futureDate = parseLocal(nextEp.air_date);
+        }
+
+        if (futureDate) {
+            const daysUntil = diffDays(futureDate, TODAY);
+            if (daysUntil <= 14) {
+                return `coming_date_${formatFutureDate(futureDate).replace(' ', '_')}`;
+            } else if (isBrandNewSeries) {
+                return "coming_soon";
+            }
+        }
+
+        if (nextEp?.air_date) {
+            const nextAirDate = parseLocal(nextEp.air_date);
+            if (nextAirDate > TODAY && diffDays(nextAirDate, TODAY) <= 5) {
+                const nextSeason = tvData.seasons?.find(s => s.season_number === nextEp.season_number);
+                const expectedCount = nextSeason?.episode_count || 0;
+                let isNextFinale = nextEp.episode_type === "finale" || (expectedCount > 0 && nextEp.episode_number >= expectedCount);
+                if (isNextFinale) {
+                    return `finale_date_${formatFutureDate(nextAirDate).replace(' ', '_')}`;
+                }
+            }
+        }
+
+        const latestSeason = tvData.seasons?.slice().reverse().find(s => s.season_number > 0);
+        const seasonAir = latestSeason?.air_date ? parseLocal(latestSeason.air_date) : null;
+
+        if (firstAir && firstAir <= TODAY && diffDays(TODAY, firstAir) <= 6) return "premiere";
+        if (firstAir && firstAir <= TODAY && diffDays(TODAY, firstAir) <= 13) return "new_series";
+        if (seasonAir && seasonAir <= TODAY && diffDays(TODAY, seasonAir) <= 13) return "new_season";
+        if (isFinale && lastAir && lastAir <= TODAY && diffDays(TODAY, lastAir) <= 13) {
+            return (tvData.status === "Ended" || tvData.status === "Canceled") ? "series_finale" : "season_finale";
+        }
+        if (lastAir && lastAir <= TODAY && diffDays(TODAY, lastAir) <= 6) return "new_episode";
+        if ((tvData.status === "Ended" || tvData.status === "Canceled") && tvData.number_of_seasons > 1 && lastAir && lastAir <= TODAY && diffDays(TODAY, lastAir) <= 30) {
+            return "final_season";
+        }
+
+    } catch (error) {
+        console.error(`Failed to get series tag for ${seriesId}:`, error);
+    }
+    return "none";
+}
+
 // ─── Shared image-generation helpers ─────────────────────────────────────────
 
 /**
@@ -692,14 +823,14 @@ builder.defineCatalogHandler(async (args) => {
 
         const pTag = userConfig.portraitTags ? (item._tag || 'none') : 'none';
         if (userConfig.portraitRanked || userConfig.portraitTags || userConfig.portraitLogos || userConfig.portraitPosterLang !== 'en') {
-            finalPosterUrl = `${ADDON_URL}/proxy-image-poster/${type}/${item.id}/${pTag}/${userConfig.portraitRanked ? rank : 'none'}/${userConfig.portraitPosterLang}/${userConfig.portraitLogos ? '1' : '0'}.png`;
+            finalPosterUrl = `${ADDON_URL}/poster/${item.id}.png?type=${type}&tag=${pTag}&rank=${userConfig.portraitRanked ? rank : 'none'}&lang=${userConfig.portraitPosterLang}&logos=${userConfig.portraitLogos ? '1' : '0'}`;
         }
 
         let itemGenres = item.genre_ids ? item.genre_ids.map(gId => genreMap[gId]).filter(Boolean) : [];
         if (userConfig.listLang === 'non-en' && item.original_language) {
             try {
                 const langName = new Intl.DisplayNames(['en'], { type: 'language' }).of(item.original_language);
-                if (langName) itemGenres.unshift(langName);
+                if (langName && !itemGenres.includes(langName)) itemGenres.unshift(langName);
             } catch {
                 itemGenres.unshift(item.original_language.toUpperCase());
             }
@@ -714,7 +845,7 @@ builder.defineCatalogHandler(async (args) => {
             type: type,
             genres: itemGenres,
             description: item.overview || "",
-            background: `${ADDON_URL}/proxy-image-backdrop/${type}/${item.id}/${lTag}/${userConfig.landscapeRanked ? rank : 'none'}/${userConfig.landscapePosterLang}/${userConfig.landscapeLogos ? '1' : '0'}.png`,
+            background: `${ADDON_URL}/backdrop/${item.id}.png?type=${type}&tag=${lTag}&rank=${userConfig.landscapeRanked ? rank : 'none'}&lang=${userConfig.landscapePosterLang}&logos=${userConfig.landscapeLogos ? '1' : '0'}`,
             poster: finalPosterUrl
         };
     });
@@ -724,349 +855,370 @@ builder.defineCatalogHandler(async (args) => {
 
 // ─── Backdrop route ───────────────────────────────────────────────────────────
 
-app.get(
-    ['/proxy-image-backdrop/:type/:id/:tag/:lang.png',
-        '/proxy-image-backdrop/:type/:id/:tag/:lang/:logos.png'],
-    async (req, res) => {
-        const { type, id, tag, lang, logos } = req.params;
-        const newUrl = `/proxy-image-backdrop/${type}/${id}/${tag}/none/${lang}${logos ? `/${logos}` : ''}.png`;
-        return res.redirect(301, newUrl);
-    }
-);
+app.get('/proxy-image-backdrop/:type/:id/:tag/:rank/:lang/:logos.png', async (req, res) => {
+    const { type, id, tag, rank, lang, logos } = req.params;
+    const query = new URLSearchParams({ type, tag, rank: rank || 'none', lang, logos: logos || '0' });
+    return res.redirect(301, `/backdrop/${id}.png?${query.toString()}`);
+});
 
-app.get(
-    ['/proxy-image-backdrop/:type/:id/:tag/:rank/:lang.png',
-        '/proxy-image-backdrop/:type/:id/:tag/:rank/:lang/:logos.png'],
-    async (req, res) => {
-        if (await serveCached(req.originalUrl, res)) return;
+app.get('/backdrop/:id.png', async (req, res) => {
+    if (await serveCached(req.originalUrl, res)) return;
 
-        try {
-            const { type, id, tag, rank, lang, logos } = req.params;
-            const tmdbType = type === 'series' ? 'tv' : 'movie';
-            const showLogos = logos === '1';
-            const tagText = parseTagText(tag);
-            const drawTag = !!tagText;
-            const drawRank = rank && rank !== 'none';
+    try {
+        const { id } = req.params;
+        const { type, tag, rank, lang, logos } = req.query;
+        const tmdbType = type === 'series' ? 'tv' : 'movie';
+        const showLogos = logos === '1';
+        const tagText = parseTagText(tag);
+        const drawTag = !!tagText;
+        const drawRank = rank && rank !== 'none';
 
-            // ── 1. Fetch TMDB metadata ────────────────────────────────────────
-            const details = await fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${TMDB_API_KEY}`);
-            const originalLang = details.original_language;
+        // ── 1. Fetch TMDB metadata ────────────────────────────────────────
+        const details = await fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${TMDB_API_KEY}`);
+        const originalLang = details.original_language;
 
-            const fallbackLangs = ['en', 'null', 'ja', 'ko', 'es', 'fr', 'de', 'hi', 'it', 'pt', 'ru', 'zh', 'th', 'tr', 'pl', 'nl', 'sv', 'ar'];
-            const tmdbLangsSet = [...new Set([lang, originalLang, ...fallbackLangs])].filter(Boolean);
-            const allowedLangs = tmdbLangsSet.map(l => l === 'null' ? null : l);
-            const tmdbLangs = tmdbLangsSet.join(',');
+        const fallbackLangs = ['en', 'null', 'ja', 'ko', 'es', 'fr', 'de', 'hi', 'it', 'pt', 'ru', 'zh', 'th', 'tr', 'pl', 'nl', 'sv', 'ar'];
+        const tmdbLangsSet = [...new Set([lang, originalLang, ...fallbackLangs])].filter(Boolean);
+        const allowedLangs = tmdbLangsSet.map(l => l === 'null' ? null : l);
+        const tmdbLangs = tmdbLangsSet.join(',');
 
-            const [images, providers] = await Promise.all([
-                fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}/images?api_key=${TMDB_API_KEY}&include_image_language=${tmdbLangs}`),
-                showLogos ? fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}/watch/providers?api_key=${TMDB_API_KEY}`) : Promise.resolve(null)
-            ]);
+        const [images, providers] = await Promise.all([
+            fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}/images?api_key=${TMDB_API_KEY}&include_image_language=${tmdbLangs}`),
+            showLogos ? fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}/watch/providers?api_key=${TMDB_API_KEY}`) : Promise.resolve(null)
+        ]);
 
-            if (providers) details['watch/providers'] = providers;
+        if (providers) details['watch/providers'] = providers;
 
-            if (images.backdrops) {
-                images.backdrops = images.backdrops.filter(b => allowedLangs.includes(b.iso_639_1));
-            }
+        if (images.backdrops) {
+            images.backdrops = images.backdrops.filter(b => allowedLangs.includes(b.iso_639_1));
+        }
 
-            const backdropLangToUse = lang === 'null' ? null : lang;
-            const backdrop = images.backdrops?.find(b => b.iso_639_1 === backdropLangToUse)
-                || (originalLang && images.backdrops?.find(b => b.iso_639_1 === originalLang))
-                || images.backdrops?.find(b => b.iso_639_1 === null)
-                || images.backdrops?.[0];
+        const backdropLangToUse = lang === 'null' ? null : lang;
+        const backdrop = images.backdrops?.find(b => b.iso_639_1 === backdropLangToUse)
+            || (originalLang && images.backdrops?.find(b => b.iso_639_1 === originalLang))
+            || images.backdrops?.find(b => b.iso_639_1 === null)
+            || images.backdrops?.[0];
 
-            if (!backdrop?.file_path) {
-                return res.redirect(301, 'https://via.placeholder.com/1280x720.png?text=No+Background+Available');
-            }
+        if (!backdrop?.file_path) {
+            return res.redirect(301, 'https://via.placeholder.com/1280x720.png?text=No+Background+Available');
+        }
 
-            let titleLogo = null;
-            if (lang !== 'null' && backdrop.iso_639_1 === null && images.logos && images.logos.length > 0) {
-                titleLogo = images.logos.find(l => l.iso_639_1 === lang)
-                    || (originalLang && images.logos.find(l => l.iso_639_1 === originalLang))
-                    || images.logos.find(l => l.iso_639_1 === 'en')
-                    || images.logos[0];
-            }
+        let titleLogo = null;
+        if (lang !== 'null' && backdrop.iso_639_1 === null && images.logos && images.logos.length > 0) {
+            titleLogo = images.logos.find(l => l.iso_639_1 === lang)
+                || (originalLang && images.logos.find(l => l.iso_639_1 === originalLang))
+                || images.logos.find(l => l.iso_639_1 === 'en')
+                || images.logos[0];
+        }
 
-            // Resolve logo info (sync, no fetch yet)
-            const logoInfo = showLogos ? resolveProviderLogoInfo(tmdbType, details) : null;
+        // Resolve logo info (sync, no fetch yet)
+        const logoInfo = showLogos ? resolveProviderLogoInfo(tmdbType, details) : null;
 
-            // Fast path: nothing to draw → just redirect
-            if (!drawTag && !drawRank && !logoInfo && !titleLogo) {
-                return res.redirect(301, `https://image.tmdb.org/t/p/original${backdrop.file_path}`);
-            }
+        // Fast path: nothing to draw → just redirect
+        if (!drawTag && !drawRank && !logoInfo && !titleLogo) {
+            return res.redirect(301, `https://image.tmdb.org/t/p/original${backdrop.file_path}`);
+        }
 
-            // ── 2. Fetch backdrop image + provider logo in parallel ───────────
-            const [backdropBuffer, logoCompositeResult] = await Promise.all([
-                fetch(`https://image.tmdb.org/t/p/w1280${backdrop.file_path}`)
-                    .then(r => r.arrayBuffer())
-                    .then(ab => Buffer.from(ab)),
-                logoInfo
-                    ? (async () => { /* placeholder — computed after we know image dimensions */ return logoInfo; })()
-                    : Promise.resolve(null)
-            ]);
+        // ── 2. Fetch backdrop image + provider logo in parallel ───────────
+        const [backdropBuffer, logoCompositeResult] = await Promise.all([
+            fetch(`https://image.tmdb.org/t/p/w1280${backdrop.file_path}`)
+                .then(r => r.arrayBuffer())
+                .then(ab => Buffer.from(ab)),
+            logoInfo
+                ? (async () => { /* placeholder — computed after we know image dimensions */ return logoInfo; })()
+                : Promise.resolve(null)
+        ]);
 
-            const backdropImage = sharp(backdropBuffer);
-            const metadata = await backdropImage.metadata();
-            const { width } = metadata;
+        const backdropImage = sharp(backdropBuffer);
+        const metadata = await backdropImage.metadata();
+        const { width } = metadata;
 
-            // ── 3. Build rank SVG (sync, zero I/O) ───────────────────────────
-            let rankComposite = null;
-            if (drawRank) {
-                const fontSize = Math.round(metadata.height * 0.20);
-                const paddingTop = Math.round(metadata.height * 0.05);
-                const paddingLeft = Math.round(width * 0.05);
-                const fontStack = "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+        // ── 3. Build rank SVG (sync, zero I/O) ───────────────────────────
+        let rankComposite = null;
+        if (drawRank) {
+            const fontSize = Math.round(metadata.height * 0.20);
+            const paddingTop = Math.round(metadata.height * 0.05);
+            const paddingLeft = Math.round(width * 0.05);
+            const fontStack = "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
-                const rankSvg = `<svg width="${width}" height="${metadata.height}">
-                    <defs>
-                        <linearGradient id="rankGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%"   style="stop-color:#ffffff;stop-opacity:1"/>
-                            <stop offset="60%"  style="stop-color:#c0c0c0;stop-opacity:1"/>
-                            <stop offset="100%" style="stop-color:#808080;stop-opacity:1"/>
-                        </linearGradient>
-                        <filter id="rankShadow" x="-10%" y="-10%" width="120%" height="120%">
-                            <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
-                            <feOffset dx="3" dy="3" result="offsetblur"/>
-                            <feFlood flood-color="black" flood-opacity="0.9"/>
-                            <feComposite in2="offsetblur" operator="in"/>
-                            <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
-                        </filter>
-                        <radialGradient id="shimmerGradient" cx="0%" cy="0%" r="100%" fx="0%" fy="0%">
-                            <stop offset="0%"   style="stop-color:black;stop-opacity:0.6"/>
-                            <stop offset="40%"  style="stop-color:black;stop-opacity:0.3"/>
-                            <stop offset="100%" style="stop-color:black;stop-opacity:0"/>
-                        </radialGradient>
-                    </defs>
-                    <rect x="0" y="0" width="${width * 0.4}" height="${fontSize * 1.5}" fill="url(#shimmerGradient)"/>
-                    <text x="${paddingLeft}" y="${paddingTop + fontSize / 1.1}" text-anchor="start"
-                          font-family="${fontStack}" font-size="${fontSize}"
-                          fill="url(#rankGradient)" fill-opacity="0.80" font-weight="bold"
-                          filter="url(#rankShadow)">${rank}</text>
-                </svg>`;
+            const rankSvg = `<svg width="${width}" height="${metadata.height}">
+                <defs>
+                    <linearGradient id="rankGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%"   style="stop-color:#ffffff;stop-opacity:1"/>
+                        <stop offset="60%"  style="stop-color:#c0c0c0;stop-opacity:1"/>
+                        <stop offset="100%" style="stop-color:#808080;stop-opacity:1"/>
+                    </linearGradient>
+                    <filter id="rankShadow" x="-10%" y="-10%" width="120%" height="120%">
+                        <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+                        <feOffset dx="3" dy="3" result="offsetblur"/>
+                        <feFlood flood-color="black" flood-opacity="0.9"/>
+                        <feComposite in2="offsetblur" operator="in"/>
+                        <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                    <radialGradient id="shimmerGradient" cx="0%" cy="0%" r="100%" fx="0%" fy="0%">
+                        <stop offset="0%"   style="stop-color:black;stop-opacity:0.6"/>
+                        <stop offset="40%"  style="stop-color:black;stop-opacity:0.3"/>
+                        <stop offset="100%" style="stop-color:black;stop-opacity:0"/>
+                    </radialGradient>
+                </defs>
+                <rect x="0" y="0" width="${width * 0.4}" height="${fontSize * 1.5}" fill="url(#shimmerGradient)"/>
+                <text x="${paddingLeft}" y="${paddingTop + fontSize / 1.1}" text-anchor="start"
+                      font-family="${fontStack}" font-size="${fontSize}"
+                      fill="url(#rankGradient)" fill-opacity="0.80" font-weight="bold"
+                      filter="url(#rankShadow)">${rank}</text>
+            </svg>`;
 
-                rankComposite = { input: Buffer.from(rankSvg), top: 0, left: 0 };
-            }
+            rankComposite = { input: Buffer.from(rankSvg), top: 0, left: 0 };
+        }
 
-            // ── 4. Tag composites + logo fetch run in parallel ────────────────
-            const [tagComposites, logoComposite, titleLogoComposite] = await Promise.all([
-                drawTag
-                    ? buildTagComposites(backdropBuffer, metadata, tagText, 0.15, 0.75)
-                    : Promise.resolve([]),
-                logoInfo
-                    ? buildLogoComposite(
-                        logoInfo.path,
-                        logoInfo.isNetwork,
-                        Math.round(width * 0.10),
-                        Math.round(metadata.height * 0.04),
-                        width,
-                        Math.round(metadata.height * 0.04)
-                    )
-                    : Promise.resolve(null),
-                titleLogo
-                    ? (async () => {
-                        try {
-                            const res = await fetch(`https://image.tmdb.org/t/p/original${titleLogo.file_path}`);
-                            if (!res.ok) return null;
-                            const buf = Buffer.from(await res.arrayBuffer());
-                            const targetWidth = Math.round(width * 0.50);
-                            const maxHeight = Math.round(metadata.height * 0.50);
-                            let resized = await sharp(buf)
-                                .resize({ width: targetWidth, height: maxHeight, fit: 'inside' })
-                                .png()
+        // ── 4. Tag composites + logo fetch run in parallel ────────────────
+        const [tagComposites, logoComposite, titleLogoComposite] = await Promise.all([
+            drawTag
+                ? buildTagComposites(backdropBuffer, metadata, tagText, 0.15, 0.75)
+                : Promise.resolve([]),
+            logoInfo
+                ? buildLogoComposite(
+                    logoInfo.path,
+                    logoInfo.isNetwork,
+                    Math.round(width * 0.10),
+                    Math.round(metadata.height * 0.04),
+                    width,
+                    Math.round(metadata.height * 0.04)
+                )
+                : Promise.resolve(null),
+            titleLogo
+                ? (async () => {
+                    try {
+                        const res = await fetch(`https://image.tmdb.org/t/p/original${titleLogo.file_path}`);
+                        if (!res.ok) return null;
+                        const buf = Buffer.from(await res.arrayBuffer());
+                        const targetWidth = Math.round(width * 0.50);
+                        const maxHeight = Math.round(metadata.height * 0.50);
+                        let resized = await sharp(buf)
+                            .resize({ width: targetWidth, height: maxHeight, fit: 'inside' })
+                            .png()
+                            .toBuffer();
+                        const meta = await sharp(resized).metadata();
+                        const paddingLeft = Math.round(width * 0.05);
+                        const paddingBottom = Math.round(metadata.height * 0.20);
+
+                        const targetLeft = paddingLeft;
+                        const targetTop = metadata.height - meta.height - paddingBottom;
+
+                        // Sharp throws an error if the composite overlay is larger than the base image
+                        const extractLeft = Math.max(0, -targetLeft);
+                        const extractTop = Math.max(0, -targetTop);
+                        const extractRight = Math.min(meta.width, width - targetLeft);
+                        const extractBottom = Math.min(meta.height, metadata.height - targetTop);
+
+                        const extractWidth = extractRight - extractLeft;
+                        const extractHeight = extractBottom - extractTop;
+
+                        if (extractWidth <= 0 || extractHeight <= 0) return null;
+
+                        if (extractWidth < meta.width || extractHeight < meta.height) {
+                            resized = await sharp(resized)
+                                .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
                                 .toBuffer();
-                            const meta = await sharp(resized).metadata();
-                            const paddingLeft = Math.round(width * 0.05);
-                            const paddingBottom = Math.round(metadata.height * 0.20);
-
-                            const targetLeft = paddingLeft;
-                            const targetTop = metadata.height - meta.height - paddingBottom;
-
-                            // Sharp throws an error if the composite overlay is larger than the base image
-                            const extractLeft = Math.max(0, -targetLeft);
-                            const extractTop = Math.max(0, -targetTop);
-                            const extractRight = Math.min(meta.width, width - targetLeft);
-                            const extractBottom = Math.min(meta.height, metadata.height - targetTop);
-
-                            const extractWidth = extractRight - extractLeft;
-                            const extractHeight = extractBottom - extractTop;
-
-                            if (extractWidth <= 0 || extractHeight <= 0) return null;
-
-                            if (extractWidth < meta.width || extractHeight < meta.height) {
-                                resized = await sharp(resized)
-                                    .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
-                                    .toBuffer();
-                            }
-
-                            return {
-                                input: resized,
-                                left: targetLeft + extractLeft,
-                                top: targetTop + extractTop
-                            };
-                        } catch (e) {
-                            console.error("Title logo error:", e);
-                            return null;
                         }
-                    })()
-                    : Promise.resolve(null)
-            ]);
 
-            const compositeOperations = [
-                ...(rankComposite ? [rankComposite] : []),
-                ...tagComposites,
-                ...(titleLogoComposite ? [titleLogoComposite] : []),
-                ...(logoComposite ? [logoComposite] : [])
-            ];
+                        return {
+                            input: resized,
+                            left: targetLeft + extractLeft,
+                            top: targetTop + extractTop
+                        };
+                    } catch (e) {
+                        console.error("Title logo error:", e);
+                        return null;
+                    }
+                })()
+                : Promise.resolve(null)
+        ]);
 
-            const finalImageBuffer = await backdropImage
-                .composite(compositeOperations)
-                .png()
-                .toBuffer();
+        const compositeOperations = [
+            ...(rankComposite ? [rankComposite] : []),
+            ...tagComposites,
+            ...(titleLogoComposite ? [titleLogoComposite] : []),
+            ...(logoComposite ? [logoComposite] : [])
+        ];
 
-            cacheAndSend(req.originalUrl, finalImageBuffer, res);
-        } catch (error) {
-            console.error("Backdrop generation error:", error);
-            res.status(500).send("Error generating image");
+        const finalImageBuffer = await backdropImage
+            .composite(compositeOperations)
+            .png()
+            .toBuffer();
+
+        cacheAndSend(req.originalUrl, finalImageBuffer, res);
+    } catch (error) {
+        console.error("Backdrop generation error:", error);
+        res.status(500).send("Error generating image");
+    }
+});
+
+// ─── Universal image route ────────────────────────────────────────────────────
+
+app.get('/image/:type/:id.png', async (req, res) => {
+    const { type, id } = req.params;
+    const { tag, lang, logos } = req.query;
+
+    let finalTag = tag;
+
+    // If no tag is provided, calculate it.
+    if (!finalTag || finalTag === 'auto') {
+        if (type === 'movie') {
+            finalTag = await getMovieTag(id);
+        } else if (type === 'series') {
+            finalTag = await getSeriesTag(id);
+        } else {
+            finalTag = 'none';
         }
     }
-);
+
+    const query = new URLSearchParams({ type, tag: finalTag, rank: 'none', lang: lang || 'en', logos: logos || '0' });
+    const newUrl = `/poster/${id}.png?${query.toString()}`;
+    return res.redirect(302, newUrl); // Use 302 Found, as the tag can change
+});
 
 // ─── Poster route ─────────────────────────────────────────────────────────────
 
-app.get(
-    ['/proxy-image-poster/:type/:id/:tag/:rank/:lang.png',
-        '/proxy-image-poster/:type/:id/:tag/:rank/:lang/:logos.png'],
-    async (req, res) => {
-        if (await serveCached(req.originalUrl, res)) return;
+app.get('/proxy-image-poster/:type/:id/:tag/:rank/:lang/:logos.png', async (req, res) => {
+    const { type, id, tag, rank, lang, logos } = req.params;
+    const query = new URLSearchParams({ type, tag, rank: rank || 'none', lang, logos: logos || '0' });
+    return res.redirect(301, `/poster/${id}.png?${query.toString()}`);
+});
 
-        try {
-            const { type, id, tag, rank, lang, logos } = req.params;
-            const tmdbType = type === 'series' ? 'tv' : 'movie';
-            const showLogos = logos === '1';
-            const tagText = parseTagText(tag);
-            const drawTag = !!tagText;
-            const drawRank = rank && rank !== 'none';
+app.get('/poster/:id.png', async (req, res) => {
+    if (await serveCached(req.originalUrl, res)) return;
 
-            // ── 1. Fetch TMDB metadata ────────────────────────────────────────
-            const details = await fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${TMDB_API_KEY}`);
-            const originalLang = details.original_language;
+    try {
+        const { id } = req.params;
+        const { type, tag, rank, lang, logos } = req.query;
+        const tmdbType = type === 'series' ? 'tv' : 'movie';
+        const showLogos = logos === '1';
+        const tagText = parseTagText(tag);
+        const drawTag = !!tagText;
+        const drawRank = rank && rank !== 'none';
 
-            const fallbackLangs = ['en', 'null', 'ja', 'ko', 'es', 'fr', 'de', 'hi', 'it', 'pt', 'ru', 'zh', 'th', 'tr', 'pl', 'nl', 'sv', 'ar'];
-            const tmdbLangsSet = [...new Set([lang, originalLang, ...fallbackLangs])].filter(Boolean);
-            const allowedLangs = tmdbLangsSet.map(l => l === 'null' ? null : l);
-            const tmdbLangs = tmdbLangsSet.join(',');
+        // ── 1. Fetch TMDB metadata ────────────────────────────────────────
+        const details = await fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}?api_key=${TMDB_API_KEY}`);
+        const originalLang = details.original_language;
 
-            const [images, providers] = await Promise.all([
-                fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}/images?api_key=${TMDB_API_KEY}&include_image_language=${tmdbLangs}`),
-                showLogos ? fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}/watch/providers?api_key=${TMDB_API_KEY}`) : Promise.resolve(null)
-            ]);
+        const fallbackLangs = ['en', 'null', 'ja', 'ko', 'es', 'fr', 'de', 'hi', 'it', 'pt', 'ru', 'zh', 'th', 'tr', 'pl', 'nl', 'sv', 'ar'];
+        const tmdbLangsSet = [...new Set([lang, originalLang, ...fallbackLangs])].filter(Boolean);
+        const allowedLangs = tmdbLangsSet.map(l => l === 'null' ? null : l);
+        const tmdbLangs = tmdbLangsSet.join(',');
 
-            if (providers) details['watch/providers'] = providers;
+        const [images, providers] = await Promise.all([
+            fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}/images?api_key=${TMDB_API_KEY}&include_image_language=${tmdbLangs}`),
+            showLogos ? fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${id}/watch/providers?api_key=${TMDB_API_KEY}`) : Promise.resolve(null)
+        ]);
 
-            if (images.posters) {
-                images.posters = images.posters.filter(p => allowedLangs.includes(p.iso_639_1));
-            }
+        if (providers) details['watch/providers'] = providers;
 
-            const posterLangToUse = lang === 'null' ? null : lang;
-            const poster = images.posters?.find(p => p.iso_639_1 === posterLangToUse)
-                || (originalLang && images.posters?.find(p => p.iso_639_1 === originalLang))
-                || images.posters?.find(p => p.iso_639_1 === null)
-                || images.posters?.find(p => p.iso_639_1 === 'en')
-                || images.posters?.[0];
-
-            if (!poster?.file_path) {
-                return res.redirect(301, 'https://via.placeholder.com/500x750.png?text=Poster+Unavailable');
-            }
-
-            // Resolve logo info (sync, no fetch yet)
-            const logoInfo = showLogos ? resolveProviderLogoInfo(tmdbType, details) : null;
-
-            // Fast path: nothing to draw → just redirect
-            if (!drawTag && !drawRank && !logoInfo) {
-                return res.redirect(301, `https://image.tmdb.org/t/p/w500${poster.file_path}`);
-            }
-
-            // ── 2. Fetch poster image (logo fetch is deferred until we have width) ──
-            const posterBuffer = await fetch(`https://image.tmdb.org/t/p/w500${poster.file_path}`)
-                .then(r => r.arrayBuffer())
-                .then(ab => Buffer.from(ab));
-
-            const posterImage = sharp(posterBuffer);
-            const metadata = await posterImage.metadata();
-            const { width } = metadata;
-
-            // ── 3. Build rank SVG (sync, zero I/O) ───────────────────────────
-            let rankComposite = null;
-            if (drawRank) {
-                const fontSize = Math.round(width * 0.30);
-                const paddingTop = Math.round(width * 0.08);
-                const paddingLeft = Math.round(width * 0.08);
-                const fontStack = "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
-
-                const rankSvg = `<svg width="${width}" height="${metadata.height}">
-                    <defs>
-                        <linearGradient id="rankGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%"   style="stop-color:#ffffff;stop-opacity:1"/>
-                            <stop offset="60%"  style="stop-color:#c0c0c0;stop-opacity:1"/>
-                            <stop offset="100%" style="stop-color:#808080;stop-opacity:1"/>
-                        </linearGradient>
-                        <filter id="rankShadow" x="-10%" y="-10%" width="120%" height="120%">
-                            <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
-                            <feOffset dx="3" dy="3" result="offsetblur"/>
-                            <feFlood flood-color="black" flood-opacity="0.9"/>
-                            <feComposite in2="offsetblur" operator="in"/>
-                            <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
-                        </filter>
-                        <radialGradient id="shimmerGradient" cx="0%" cy="0%" r="100%" fx="0%" fy="0%">
-                            <stop offset="0%"   style="stop-color:black;stop-opacity:0.6"/>
-                            <stop offset="40%"  style="stop-color:black;stop-opacity:0.3"/>
-                            <stop offset="100%" style="stop-color:black;stop-opacity:0"/>
-                        </radialGradient>
-                    </defs>
-                    <rect x="0" y="0" width="${width * 0.6}" height="${fontSize * 2}" fill="url(#shimmerGradient)"/>
-                    <text x="${paddingLeft}" y="${paddingTop + fontSize / 1.3}" text-anchor="start"
-                          font-family="${fontStack}" font-size="${fontSize}"
-                          fill="url(#rankGradient)" fill-opacity="0.80" font-weight="bold"
-                          filter="url(#rankShadow)">${rank}</text>
-                </svg>`;
-
-                rankComposite = { input: Buffer.from(rankSvg), top: 0, left: 0 };
-            }
-
-            // ── 4. Tag composites + logo fetch run in parallel ────────────────
-            const [tagComposites, logoComposite] = await Promise.all([
-                drawTag
-                    ? buildTagComposites(posterBuffer, metadata, tagText, 0.08, 0.60)
-                    : Promise.resolve([]),
-                logoInfo
-                    ? buildLogoComposite(
-                        logoInfo.path,
-                        logoInfo.isNetwork,
-                        Math.round(width * 0.15),
-                        Math.round(width * 0.04),
-                        width,
-                        Math.round(width * 0.04)
-                    )
-                    : Promise.resolve(null)
-            ]);
-
-            const compositeOperations = [
-                ...(rankComposite ? [rankComposite] : []),
-                ...tagComposites,
-                ...(logoComposite ? [logoComposite] : [])
-            ];
-
-            const finalImageBuffer = await posterImage
-                .composite(compositeOperations)
-                .png()
-                .toBuffer();
-
-            cacheAndSend(req.originalUrl, finalImageBuffer, res);
-        } catch (error) {
-            console.error("Poster generation error:", error);
-            res.status(500).send("Error generating image");
+        if (images.posters) {
+            images.posters = images.posters.filter(p => allowedLangs.includes(p.iso_639_1));
         }
+
+        const posterLangToUse = lang === 'null' ? null : lang;
+        const poster = images.posters?.find(p => p.iso_639_1 === posterLangToUse)
+            || (originalLang && images.posters?.find(p => p.iso_639_1 === originalLang))
+            || images.posters?.find(p => p.iso_639_1 === null)
+            || images.posters?.find(p => p.iso_639_1 === 'en')
+            || images.posters?.[0];
+
+        if (!poster?.file_path) {
+            return res.redirect(301, 'https://via.placeholder.com/500x750.png?text=Poster+Unavailable');
+        }
+
+        // Resolve logo info (sync, no fetch yet)
+        const logoInfo = showLogos ? resolveProviderLogoInfo(tmdbType, details) : null;
+
+        // Fast path: nothing to draw → just redirect
+        if (!drawTag && !drawRank && !logoInfo) {
+            return res.redirect(301, `https://image.tmdb.org/t/p/w500${poster.file_path}`);
+        }
+
+        // ── 2. Fetch poster image (logo fetch is deferred until we have width) ──
+        const posterBuffer = await fetch(`https://image.tmdb.org/t/p/w500${poster.file_path}`)
+            .then(r => r.arrayBuffer())
+            .then(ab => Buffer.from(ab));
+
+        const posterImage = sharp(posterBuffer);
+        const metadata = await posterImage.metadata();
+        const { width } = metadata;
+
+        // ── 3. Build rank SVG (sync, zero I/O) ───────────────────────────
+        let rankComposite = null;
+        if (drawRank) {
+            const fontSize = Math.round(width * 0.30);
+            const paddingTop = Math.round(width * 0.08);
+            const paddingLeft = Math.round(width * 0.08);
+            const fontStack = "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+
+            const rankSvg = `<svg width="${width}" height="${metadata.height}">
+                <defs>
+                    <linearGradient id="rankGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%"   style="stop-color:#ffffff;stop-opacity:1"/>
+                        <stop offset="60%"  style="stop-color:#c0c0c0;stop-opacity:1"/>
+                        <stop offset="100%" style="stop-color:#808080;stop-opacity:1"/>
+                    </linearGradient>
+                    <filter id="rankShadow" x="-10%" y="-10%" width="120%" height="120%">
+                        <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+                        <feOffset dx="3" dy="3" result="offsetblur"/>
+                        <feFlood flood-color="black" flood-opacity="0.9"/>
+                        <feComposite in2="offsetblur" operator="in"/>
+                        <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                    <radialGradient id="shimmerGradient" cx="0%" cy="0%" r="100%" fx="0%" fy="0%">
+                        <stop offset="0%"   style="stop-color:black;stop-opacity:0.6"/>
+                        <stop offset="40%"  style="stop-color:black;stop-opacity:0.3"/>
+                        <stop offset="100%" style="stop-color:black;stop-opacity:0"/>
+                    </radialGradient>
+                </defs>
+                <rect x="0" y="0" width="${width * 0.6}" height="${fontSize * 2}" fill="url(#shimmerGradient)"/>
+                <text x="${paddingLeft}" y="${paddingTop + fontSize / 1.3}" text-anchor="start"
+                      font-family="${fontStack}" font-size="${fontSize}"
+                      fill="url(#rankGradient)" fill-opacity="0.80" font-weight="bold"
+                      filter="url(#rankShadow)">${rank}</text>
+            </svg>`;
+
+            rankComposite = { input: Buffer.from(rankSvg), top: 0, left: 0 };
+        }
+
+        // ── 4. Tag composites + logo fetch run in parallel ────────────────
+        const [tagComposites, logoComposite] = await Promise.all([
+            drawTag
+                ? buildTagComposites(posterBuffer, metadata, tagText, 0.08, 0.60)
+                : Promise.resolve([]),
+            logoInfo
+                ? buildLogoComposite(
+                    logoInfo.path,
+                    logoInfo.isNetwork,
+                    Math.round(width * 0.15),
+                    Math.round(width * 0.04),
+                    width,
+                    Math.round(width * 0.04)
+                )
+                : Promise.resolve(null)
+        ]);
+
+        const compositeOperations = [
+            ...(rankComposite ? [rankComposite] : []),
+            ...tagComposites,
+            ...(logoComposite ? [logoComposite] : [])
+        ];
+
+        const finalImageBuffer = await posterImage
+            .composite(compositeOperations)
+            .png()
+            .toBuffer();
+
+        cacheAndSend(req.originalUrl, finalImageBuffer, res);
+    } catch (error) {
+        console.error("Poster generation error:", error);
+        res.status(500).send("Error generating image");
     }
-);
+});
+
 
 // ─── Config UI ────────────────────────────────────────────────────────────────
 
@@ -1120,8 +1272,8 @@ const configUI = `<!DOCTYPE html>
         .options-container label:hover { background: #333; }
         .options-container input { margin-right: 10px; width: 16px; height: 16px; accent-color: #8b0000; cursor: pointer; }
         .tooltip { position: relative; display: inline-flex; justify-content: center; align-items: center; background: #444; color: #ddd; border-radius: 50%; width: 16px; height: 16px; font-size: 12px; font-weight: bold; margin-left: 6px; cursor: help; }
-        .tooltip .tooltiptext { visibility: hidden; width: 220px; background-color: #333; color: #fff; text-align: center; border-radius: 6px; padding: 8px; position: absolute; z-index: 10; bottom: 100%; left: -20px; margin-bottom: 10px; opacity: 0; transition: opacity 0.2s; font-size: 12px; font-weight: 400; box-shadow: 0 4px 10px rgba(0,0,0,0.5); pointer-events: none; line-height: 1.4; }
-        .tooltip .tooltiptext::after { content: ""; position: absolute; top: 100%; left: 28px; margin-left: -5px; border-width: 5px; border-style: solid; border-color: #333 transparent transparent transparent; }
+        .tooltip .tooltiptext { visibility: hidden; width: 220px; background-color: #333; color: #fff; text-align: center; border-radius: 6px; padding: 8px; position: absolute; z-index: 10; bottom: 125%; left: 50%; transform: translateX(-50%); opacity: 0; transition: opacity 0.2s; font-size: 12px; font-weight: 400; box-shadow: 0 4px 10px rgba(0,0,0,0.5); pointer-events: none; line-height: 1.4; }
+        .tooltip .tooltiptext::after { content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border-width: 5px; border-style: solid; border-color: #333 transparent transparent transparent; }
         .tooltip:hover .tooltiptext { visibility: visible; opacity: 1; }
         @media (max-width: 768px) {
             body { padding: 10px; height: auto; overflow: auto; }
@@ -1193,8 +1345,15 @@ const configUI = `<!DOCTYPE html>
                 <div class="form-group">
                     <label>Manifest URL</label>
                     <div class="link-container">
-                        <input type="text" id="manifestUrl" readonly>
-                        <button id="copyBtn" onclick="copyLink()">Copy</button>
+                        <input type="text" id="manifestUrl" readonly style="font-size: 12px;">
+                        <button id="copyBtn" onclick="copyLink('manifestUrl', 'copyBtn')">Copy</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>AIOMetadata Poster Pattern URL <span class="tooltip">?<span class="tooltiptext">Uses portrait poster config. Add it to AIOMetadata by pasting it at: Art Providers → Art URL Overrides → URL Patterns → Poster URL Pattern</span></span></label>
+                    <div class="link-container">
+                        <input type="text" id="patternUrl" readonly style="font-size: 12px;">
+                        <button id="copyPatternBtn" onclick="copyLink('patternUrl', 'copyPatternBtn')">Copy</button>
                     </div>
                 </div>
                 <button id="installBtn" class="main-btn">Install</button>
@@ -1270,7 +1429,21 @@ const configUI = `<!DOCTYPE html>
             const c = "landscapeTags=" + lt + "|landscapeLogos=" + llo + "|landscapeRanked=" + lr + "|portraitTags=" + pt + "|portraitLogos=" + plo + "|portraitRanked=" + pr_chk + "|posterLang=" + plang + "|digitalOnly=" + d + "|listLang=" + l;
             const h = window.location.host, pr = window.location.protocol;
             
+            // Build dynamic pattern URL
+            const patternParams = new URLSearchParams();
+            if (!pt) { // if portrait tags are disabled
+                patternParams.set('tag', 'none');
+            }
+            if (plo) { // if portrait logos are enabled
+                patternParams.set('logos', '1');
+            }
+            if (plang !== 'en') { // if language is not the default
+                patternParams.set('lang', plang);
+            }
+            const patternQuery = patternParams.toString() ? '?' + patternParams.toString() : '';
+
             document.getElementById('manifestUrl').value = pr + "//" + h + "/" + c + "/manifest.json";
+            document.getElementById('patternUrl').value = pr + "//" + h + "/image/{type}/{id}.png" + patternQuery;
             document.getElementById('installBtn').onclick = () => { window.location.href = "stremio://" + h + "/" + c + "/manifest.json" };
             
             clearTimeout(previewTimeout);
@@ -1311,13 +1484,12 @@ const configUI = `<!DOCTYPE html>
             
             const renderItems = (items) => {
                 if (!items || items.length === 0) return '<div class="loading">No items found</div>';
-                return items.slice(0, 10).map(item => {
-                    const tmdbId = item._tmdbId || item.id.replace('tmdb:', '').replace('tt', '');
+                return items.map(item => {
                     const tmdbType = item.type === 'series' ? 'tv' : 'movie';
                     const imgTag = mode === 'landscape' 
                         ? '<img src="' + item.background + '" alt="bg" loading="lazy" />'
                         : '<img src="' + item.poster + '" alt="poster" loading="lazy" />';
-                    return '<a href="https://www.themoviedb.org/' + tmdbType + '/' + tmdbId + '" target="_blank" class="item-card ' + mode + '">' +
+                    return '<a href="https://www.themoviedb.org/' + tmdbType + '/' + item._tmdbId + '" target="_blank" class="item-card ' + mode + '">' +
                            imgTag + 
                            '<p class="item-title" title="' + item.name + '">' + item.name + '</p>' + 
                            '</a>';
@@ -1328,12 +1500,12 @@ const configUI = `<!DOCTYPE html>
             moviesContainer.innerHTML = renderItems(currentMovies);
         }
         
-        function copyLink() {
-            const c = document.getElementById("manifestUrl");
+        function copyLink(inputId, buttonId) {
+            const c = document.getElementById(inputId);
             c.select();
             c.setSelectionRange(0, 99999);
             navigator.clipboard.writeText(c.value).then(() => {
-                const b = document.getElementById("copyBtn");
+                const b = document.getElementById(buttonId);
                 const o = b.innerText;
                 b.innerText = "Copied!";
                 b.style.backgroundColor = "#660000";
