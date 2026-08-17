@@ -1443,7 +1443,7 @@ const configUI = `<!DOCTYPE html>
             const patternQuery = patternParams.toString() ? '?' + patternParams.toString() : '';
 
             document.getElementById('manifestUrl').value = pr + "//" + h + "/" + c + "/manifest.json";
-            document.getElementById('patternUrl').value = pr + "//" + h + "/image/{type}/{id}.png" + patternQuery;
+            document.getElementById('patternUrl').value = pr + "//" + h + "/image/{type}/{tmdb_id}.png" + patternQuery;
             document.getElementById('installBtn').onclick = () => { window.location.href = "stremio://" + h + "/" + c + "/manifest.json" };
             
             clearTimeout(previewTimeout);
