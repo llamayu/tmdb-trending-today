@@ -550,6 +550,61 @@ function cacheAndSend(cacheKey, buffer, res) {
     res.send(buffer);
 }
 
+async function getAiomRank(type, targetId, listLang, digitalOnly) {
+    const tmdbType = type === 'series' ? 'tv' : 'movie';
+    const languages = (listLang || 'en').split(',');
+    const today = new Date();
+    const rankedItems = [];
+    const seenIds = new Set();
+
+    for (let page = 1; page <= 10 && rankedItems.length < 10; page++) {
+        const data = await fetchTmdbJson(`https://api.themoviedb.org/3/trending/${tmdbType}/day?api_key=${TMDB_API_KEY}&page=${page}`);
+        if (!data.results || data.results.length === 0) break;
+
+        let pageItems = data.results.filter(item => {
+            if (seenIds.has(item.id)) return false;
+            seenIds.add(item.id);
+
+            return languages.includes('all')
+                || (languages.includes('non-en') && item.original_language !== 'en')
+                || languages.includes(item.original_language);
+        });
+
+        if (type === 'movie' && digitalOnly) {
+            const releaseDates = await Promise.all(pageItems.map(async item => {
+                try {
+                    const releaseData = await fetchTmdbJson(`https://api.themoviedb.org/3/movie/${item.id}/release_dates?api_key=${TMDB_API_KEY}`);
+                    const usData = releaseData.results?.find(country => country.iso_3166_1 === 'US');
+                    const globalDates = releaseData.results?.flatMap(country => country.release_dates) || [];
+                    const usReleases = usData?.release_dates || [];
+                    const findEarliest = (releases, types) => releases.reduce((earliest, release) => {
+                        if (!types.includes(release.type)) return earliest;
+                        const date = parseLocal(release.release_date.substring(0, 10));
+                        return !earliest || date < earliest ? date : earliest;
+                    }, null);
+                    return {
+                        digital: findEarliest(usReleases, [4]) || findEarliest(globalDates, [4]),
+                        physical: findEarliest(usReleases, [5]) || findEarliest(globalDates, [5])
+                    };
+                } catch {
+                    return { digital: null, physical: null };
+                }
+            }));
+
+            pageItems = pageItems.filter((item, index) => {
+                const dates = releaseDates[index];
+                if (dates.digital && dates.digital > today) return false;
+                return (dates.digital && dates.digital <= today) || (dates.physical && dates.physical <= today);
+            });
+        }
+
+        rankedItems.push(...pageItems);
+    }
+
+    const rank = rankedItems.findIndex(item => String(item.id) === String(targetId));
+    return rank === -1 ? 'none' : String(rank + 1);
+}
+
 // ─── Catalog handler (unchanged logic) ───────────────────────────────────────
 
 builder.defineCatalogHandler(async (args) => {
@@ -598,7 +653,7 @@ builder.defineCatalogHandler(async (args) => {
         if (pageItems.length > 0) {
             const detailsData = await Promise.all(pageItems.map(async (item) => {
                 try {
-                    return await fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${item.id}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`);
+                    return await fetchTmdbJson(`https://api.themoviedb.org/3/${tmdbType}/${item.id}?api_key=${TMDB_API_KEY}&append_to_response=external_ids,images`);
                 } catch { return null; }
             }));
             pageItems.forEach((item, index) => item._details = detailsData[index]);
@@ -692,7 +747,7 @@ builder.defineCatalogHandler(async (args) => {
             if (needsTags) {
                 const tvDetailsData = await Promise.all(pageItems.map(async (show) => {
                     try {
-                        const data = await fetchTmdbJson(`https://api.themoviedb.org/3/tv/${show.id}?api_key=${TMDB_API_KEY}&append_to_response=external_ids`);
+                        const data = await fetchTmdbJson(`https://api.themoviedb.org/3/tv/${show.id}?api_key=${TMDB_API_KEY}&append_to_response=external_ids,images`);
 
                         let nextEp = data.next_episode_to_air;
                         if (nextEp && nextEp.air_date) {
@@ -820,6 +875,12 @@ builder.defineCatalogHandler(async (args) => {
         const rank = index + 1;
         let finalPosterUrl = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : null;
         const imdbId = item._details?.imdb_id || item._details?.external_ids?.imdb_id;
+        const logos = item._details?.images?.logos || [];
+        const logoLanguage = userConfig.portraitPosterLang === 'null' ? null : userConfig.portraitPosterLang;
+        const titleLogo = logos.find(logo => logo.iso_639_1 === logoLanguage)
+            || logos.find(logo => logo.iso_639_1 === item.original_language)
+            || logos.find(logo => logo.iso_639_1 === 'en')
+            || logos[0];
 
         const pTag = userConfig.portraitTags ? (item._tag || 'none') : 'none';
         if (userConfig.portraitRanked || userConfig.portraitTags || userConfig.portraitLogos || userConfig.portraitPosterLang !== 'en') {
@@ -845,6 +906,7 @@ builder.defineCatalogHandler(async (args) => {
             type: type,
             genres: itemGenres,
             description: item.overview || "",
+            ...(titleLogo?.file_path ? { logo: `https://image.tmdb.org/t/p/original${titleLogo.file_path}` } : {}),
             background: `${ADDON_URL}/backdrop/${item.id}.png?type=${type}&tag=${lTag}&rank=${userConfig.landscapeRanked ? rank : 'none'}&lang=${userConfig.landscapePosterLang}&logos=${userConfig.landscapeLogos ? '1' : '0'}`,
             poster: finalPosterUrl
         };
@@ -1073,7 +1135,15 @@ app.get('/image/:type/:id.png', async (req, res) => {
         }
     }
 
-    const query = new URLSearchParams({ type, tag: finalTag, rank: 'none', lang: lang || 'en', logos: logos || '0' });
+    let rank = 'none';
+    if (req.query.ranked === '1' || req.query.ranked === 'true') {
+        try {
+            rank = await getAiomRank(type, id, req.query.listLang, req.query.digitalOnly !== '0');
+        } catch (error) {
+            console.error(`Failed to determine AIOM rank for ${type}/${id}:`, error);
+        }
+    }
+    const query = new URLSearchParams({ type, tag: finalTag, rank, lang: lang || 'en', logos: logos || '0' });
     const newUrl = `/poster/${id}.png?${query.toString()}`;
     return res.redirect(302, newUrl); // Use 302 Found, as the tag can change
 });
@@ -1440,6 +1510,11 @@ const configUI = `<!DOCTYPE html>
             if (plang !== 'en') { // if language is not the default
                 patternParams.set('lang', plang);
             }
+            if (pr_chk) {
+                patternParams.set('ranked', '1');
+            }
+            patternParams.set('listLang', l);
+            patternParams.set('digitalOnly', d ? '1' : '0');
             const patternQuery = patternParams.toString() ? '?' + patternParams.toString() : '';
 
             document.getElementById('manifestUrl').value = pr + "//" + h + "/" + c + "/manifest.json";
