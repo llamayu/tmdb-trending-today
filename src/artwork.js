@@ -356,14 +356,21 @@ async function buildTitleLogo(tmdb, logo, imageBuffer, width, height, layout, ha
     try {
         const buf = await tmdb.image('original', logo.file_path);
         const portrait = layout === LAYOUTS.poster;
-        let source = sharp(buf);
+        const logoMetadata = await sharp(buf).metadata();
+        const targetWidth = Math.round(width * (portrait ? 0.84 : 0.50));
+        const targetHeight = Math.round(height * (portrait ? 0.25 : 0.40));
+        const scale = logoMetadata.width && logoMetadata.height
+            ? Math.min(targetWidth / logoMetadata.width, targetHeight / logoMetadata.height)
+            : 1;
+        const density = logoMetadata.format === 'svg' ? Math.max(72, Math.ceil(72 * scale * 2)) : undefined;
+        let source = sharp(buf, density ? { density } : {});
         if (portrait) {
             source = source.trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 8 });
         }
         let resized = await source
             .resize({
-                width: Math.round(width * (portrait ? 0.84 : 0.50)),
-                height: Math.round(height * (portrait ? 0.25 : 0.40)),
+                width: targetWidth,
+                height: targetHeight,
                 fit: 'inside',
             })
             .png()
@@ -490,9 +497,17 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
             titleLogo = pickByLanguage(images.logos, [params.lang, originalLang, 'en']) || images.logos[0];
         }
         const titleText = titleExpected ? details.title || details.name : null;
-        const providerInfo = params.logos
-            ? resolveProviderLogoInfo(tmdbType, { ...details, 'watch/providers': providers })
-            : null;
+        let providerInfo = null;
+        if (params.logos) {
+            const providerDetails = { ...details, 'watch/providers': providers };
+            providerInfo = resolveProviderLogoInfo(tmdbType, providerDetails);
+            if (providerInfo?.isNetwork) {
+                // Only the raw network logo is available. If the network is itself a streaming service (Prime Video,
+                // Netflix...), TMDB's provider list has its proper icon. Decoration only: any failure keeps the network logo.
+                const catalog = await tmdb.json(`/watch/providers/${tmdbType}`, { watch_region: 'US' }).then((r) => r.results, () => null);
+                providerInfo = resolveProviderLogoInfo(tmdbType, providerDetails, catalog);
+            }
+        }
 
         const sourceSize = fallbackBackdrop ? LAYOUTS.backdrop.size : layout.size;
         const passthrough = { kind: 'redirect', url: tmdb.imageUrl(sourceSize, image.file_path) };

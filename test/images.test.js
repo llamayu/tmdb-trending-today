@@ -152,6 +152,34 @@ test('artwork: textless mode uses textless posters and overlays the title logo',
     assert.deepEqual(Array.from(data.subarray(pixel, pixel + 3)), Array.from(source.subarray(sourcePixel, sourcePixel + 3)), 'high-contrast artwork is left untouched');
 });
 
+test('artwork: curated portrait poster rasterizes SVG title logos sharply at display size', async () => {
+    const poster = await sharp({ create: { width: 500, height: 750, channels: 3, background: '#446688' } }).jpeg().toBuffer();
+    const stripes = Array.from({ length: 100 }, (_, i) => `<rect x="${i}" y="0" width="0.5" height="30" fill="white"/>`).join('');
+    const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="30"><rect width="100" height="30" fill="black"/>${stripes}</svg>`);
+    const images = { ...standardImages(1), logos: [{ iso_639_1: 'en', file_path: '/vector.svg' }] };
+    const { artwork } = artworkFor({
+        movies: [makeMovie(1, { images })],
+        cdnImages: {
+            '/t/p/w500/poster_null_1.jpg': poster,
+            '/t/p/original/vector.svg': svg,
+        },
+    });
+
+    const out = await artwork.render({ ...base, textless: true });
+    assert.equal(out.kind, 'image');
+    const { data, info } = await sharp(out.buffer).raw().toBuffer({ resolveWithObject: true });
+    let crispWhitePixels = 0;
+    for (let y = 580; y < 700; y++) {
+        let brightInRow = 0;
+        for (let x = 45; x < 455; x++) {
+            const offset = (y * info.width + x) * info.channels;
+            if (data[offset] > 220 && data[offset + 1] > 220 && data[offset + 2] > 220) brightInRow++;
+        }
+        crispWhitePixels = Math.max(crispWhitePixels, brightInRow);
+    }
+    assert.ok(crispWhitePixels > 50, `expected crisp SVG detail at final poster size, found ${crispWhitePixels} bright pixels`);
+});
+
 test('artwork: low-contrast title logo gets a radial halo with streaming logos both off and on', async () => {
     const poster = await sharp({ create: { width: 500, height: 750, channels: 3, background: '#eeeeee' } }).jpeg().toBuffer();
     const { artwork } = artworkFor({
