@@ -34,7 +34,7 @@ const isChannelStore = (name) =>
     (name.includes('apple') && name.includes('channel'));
 
 /**
- * The provider-list entry for the streaming service a network stands for ("Prime Video" -> Amazon Prime Video).
+ * The provider-list entry for the streaming service a network maps to ("Prime Video" -> Amazon Prime Video).
  * Prefers an exact name, then one starting with it, then the shortest that contains it, so "Max" beats "Cinemax"
  * and the plain service beats its "with Ads" tier. Channel/store variants are ignored.
  * @param {string} networkName
@@ -42,21 +42,32 @@ const isChannelStore = (name) =>
  */
 function streamingServiceFor(networkName, catalog) {
     const key = clean(networkName);
-    if (!Array.isArray(catalog) || !Object.hasOwn(STREAMING_NETWORKS, key)) return null;
-    const fragment = STREAMING_NETWORKS[key];
-    const tier = (name) => (name === fragment ? 0 : name.startsWith(fragment) ? 1 : 2);
+    if (!Array.isArray(catalog)) return null;
+    const fragment = STREAMING_NETWORKS[key] || NETWORK_TO_PROVIDER[(networkName || '').toLowerCase()];
+    if (!fragment) return null;
+    const normalizedFragment = clean(fragment);
+    const tier = (name) => (name === normalizedFragment ? 0 : name.startsWith(normalizedFragment) ? 1 : 2);
     const matches = catalog
         .map((p) => ({ p, name: clean(p.provider_name) }))
-        .filter(({ p, name }) => p.logo_path && name.includes(fragment) && !isChannelStore(name))
+        .filter(({ p, name }) => p.logo_path && name.includes(normalizedFragment) && !isChannelStore(name))
         .sort((a, b) => tier(a.name) - tier(b.name) || a.name.length - b.name.length);
     return matches.length ? matches[0].p : null;
+}
+
+function isStreamingNetwork(networkName) {
+    return Object.hasOwn(STREAMING_NETWORKS, clean(networkName));
+}
+
+function hasNetworkProviderMapping(networkName) {
+    const key = clean(networkName);
+    return Object.hasOwn(STREAMING_NETWORKS, key) || Object.hasOwn(NETWORK_TO_PROVIDER, (networkName || '').toLowerCase());
 }
 
 /**
  * Pick the logo to show in the corner of the artwork.
  * @param {'tv'|'movie'} tmdbType
  * @param {object} details TMDB details, with the watch-providers payload under 'watch/providers'
- * @param {Array} [providerCatalog] TMDB's /watch/providers/tv results; only needed for the network fallback (step 3)
+ * @param {Array} [providerCatalog] TMDB's /watch/providers/tv results; only used when the title has no providers
  * @returns {{path: string, isNetwork: boolean}|null}
  */
 function resolveProviderLogoInfo(tmdbType, details, providerCatalog) {
@@ -66,20 +77,7 @@ function resolveProviderLogoInfo(tmdbType, details, providerCatalog) {
     const flatrate = (us?.flatrate || []).filter((p) => !isChannelStore(clean(p.provider_name)));
     const network = tmdbType === 'tv' ? details.networks?.[0] : null;
 
-    // 1. TV: the streaming service that matches the original network
-    if (network && flatrate.length > 0) {
-        const key = (network.name || '').toLowerCase();
-        const target = Object.hasOwn(NETWORK_TO_PROVIDER, key) ? NETWORK_TO_PROVIDER[key] : clean(network.name);
-        if (target) {
-            const matched = flatrate.find((p) => {
-                const name = clean(p.provider_name);
-                return name.includes(target) || target.includes(name);
-            });
-            if (matched) return { path: matched.logo_path, isNetwork: false };
-        }
-    }
-
-    // 2. Otherwise the best-ranked flat-rate provider
+    // Prefer actual title-specific availability; network mappings are fallback-only.
     if (flatrate.length > 0) {
         let best = null;
         let bestIdx = Infinity;
@@ -91,15 +89,16 @@ function resolveProviderLogoInfo(tmdbType, details, providerCatalog) {
         return { path: best.logo_path, isNetwork: false };
     }
 
-    // 3. No streaming availability, but the network is itself a streaming service: use that service's own icon
-    if (network) {
+    // Only map the network to a service logo when the title has no streaming availability.
+    if (network && hasNetworkProviderMapping(network.name)) {
         const service = streamingServiceFor(network.name, providerCatalog);
         if (service) return { path: service.logo_path, isNetwork: false };
+        if (Object.hasOwn(STREAMING_NETWORKS, clean(network.name))) return null;
     }
 
-    // 4. Fall back to the raw network logo
+    // Fall back to the raw network logo
     if (network) return { path: network.logo_path, isNetwork: true };
     return null;
 }
 
-module.exports = { resolveProviderLogoInfo, streamingServiceFor };
+module.exports = { resolveProviderLogoInfo, streamingServiceFor, isStreamingNetwork, hasNetworkProviderMapping };

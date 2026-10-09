@@ -130,6 +130,69 @@ test('artwork: poster with tag + rank + provider logo', async () => {
     assert.deepEqual([meta.width, meta.height], [500, 750]);
 });
 
+test('artwork: Netflix title uses its available provider before network mapping', async () => {
+    const show = makeShow(19, {
+        providers: { flatrate: [{ provider_name: 'Hulu', logo_path: '/hulu-provider.png' }] },
+        tv: { networks: [{ name: 'Netflix', logo_path: '/netflix-network.png' }] },
+    });
+    const { artwork, fake } = artworkFor({
+        shows: [show],
+        providerCatalog: [{ provider_name: 'Netflix', logo_path: '/netflix-provider.png' }],
+    });
+    const out = await artwork.render({ ...base, id: '19', type: 'series', logos: true });
+
+    assert.equal(out.kind, 'image');
+    assert.equal(fake.count('/t/p/w154/hulu-provider.png'), 1);
+    assert.equal(fake.count('/t/p/w154/netflix-provider.png'), 0);
+    assert.equal(fake.count('/t/p/w154/netflix-network.png'), 0);
+});
+
+test('artwork: Paramount+ title uses its available provider before network mapping', async () => {
+    const show = makeShow(20, {
+        providers: { flatrate: [{ provider_name: 'Hulu', logo_path: '/hulu-provider.png' }] },
+        tv: { networks: [{ name: 'Paramount+', logo_path: '/paramount-network.png' }] },
+    });
+    const { artwork, fake } = artworkFor({
+        shows: [show],
+        providerCatalog: [{ provider_name: 'Paramount Plus', logo_path: '/paramount-provider.png' }],
+    });
+    const out = await artwork.render({ ...base, id: '20', type: 'series', logos: true });
+
+    assert.equal(out.kind, 'image');
+    assert.equal(fake.count('/t/p/w154/hulu-provider.png'), 1);
+    assert.equal(fake.count('/t/p/w154/paramount-provider.png'), 0);
+    assert.equal(fake.count('/t/p/w154/paramount-network.png'), 0);
+});
+
+test('artwork: Netflix and Paramount+ network mappings apply only without title streaming providers', async () => {
+    const shows = [
+        makeShow(21, {
+            providers: { flatrate: [] },
+            tv: { networks: [{ name: 'Netflix', logo_path: '/netflix-network.png' }] },
+        }),
+        makeShow(22, {
+            providers: { flatrate: [] },
+            tv: { networks: [{ name: 'Paramount+', logo_path: '/paramount-network.png' }] },
+        }),
+    ];
+    const { artwork, fake } = artworkFor({
+        shows,
+        providerCatalog: [
+            { provider_name: 'Netflix', logo_path: '/netflix-provider.png' },
+            { provider_name: 'Paramount Plus', logo_path: '/paramount-provider.png' },
+        ],
+    });
+    const netflixOut = await artwork.render({ ...base, id: '21', type: 'series', logos: true });
+    const paramountOut = await artwork.render({ ...base, id: '22', type: 'series', logos: true });
+
+    assert.equal(netflixOut.kind, 'image');
+    assert.equal(paramountOut.kind, 'image');
+    assert.equal(fake.count('/t/p/w154/netflix-provider.png'), 1);
+    assert.equal(fake.count('/t/p/w154/paramount-provider.png'), 1);
+    assert.equal(fake.count('/t/p/w154/netflix-network.png'), 0);
+    assert.equal(fake.count('/t/p/w154/paramount-network.png'), 0);
+});
+
 test('artwork: poster and background tags have a subtle rounded top-edge highlight', async () => {
     for (const [width, height, heightRatio, fontRatio, y] of [
         [500, 750, LAYOUTS.poster.tag.heightRatio, LAYOUTS.poster.tag.fontRatio, 682],

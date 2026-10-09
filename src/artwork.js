@@ -2,7 +2,7 @@
 const sharp = require('sharp');
 const { createLimiter } = require('./util');
 const { tagLabel } = require('./tags');
-const { resolveProviderLogoInfo } = require('./providers');
+const { resolveProviderLogoInfo, hasNetworkProviderMapping } = require('./providers');
 
 const FONT_STACK = "'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 const FALLBACK_LANGS = ['en', 'null', 'ja', 'ko', 'es', 'fr', 'de', 'hi', 'it', 'pt', 'ru', 'zh', 'th', 'tr', 'pl', 'nl', 'sv', 'ar'];
@@ -533,8 +533,17 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
             titleLogo = pickByLanguage(images.logos, [params.lang, originalLang, 'en']) || images.logos[0];
         }
         const titleText = titleExpected ? details.title || details.name : null;
+        let providerCatalog;
+        const networkName = details.networks?.[0]?.name;
+        if (params.logos && tmdbType === 'tv' &&
+            !(providers?.results?.US?.flatrate || []).length && hasNetworkProviderMapping(networkName)) {
+            providerCatalog = await tmdb.json('/watch/providers/tv', { watch_region: 'US' }).then((r) => r.results, (err) => {
+                logger.warn?.(`Failed to load streaming provider logos: ${err.message}`);
+                return null;
+            });
+        }
         const providerInfo = params.logos
-            ? resolveProviderLogoInfo(tmdbType, { ...details, 'watch/providers': providers })
+            ? resolveProviderLogoInfo(tmdbType, { ...details, 'watch/providers': providers }, providerCatalog)
             : null;
 
         const sourceSize = fallbackBackdrop ? LAYOUTS.backdrop.size : layout.size;
