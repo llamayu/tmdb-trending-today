@@ -41,6 +41,24 @@ test('ImageStore: round trip through disk, TTL, atomic writes', async (t) => {
     assert.equal(await c.get('k1'), null);
 });
 
+test('ImageStore: generated images expire at the next local midnight', async (t) => {
+    const dir = tmpDir();
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+    let now = new Date(2026, 0, 1, 23, 59, 0).getTime();
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 0, 0);
+    const store = new ImageStore({ dir, now: () => now, logger: silent });
+    await store.set('midnight-image', Buffer.from('image'));
+    fs.utimesSync(store.fileFor('midnight-image'), now / 1000, now / 1000);
+
+    now = midnight.getTime() - 1;
+    assert.equal((await store.get('midnight-image')).toString(), 'image');
+    now = midnight.getTime();
+    assert.equal(await store.get('midnight-image'), null);
+    assert.equal(await store.sweep(), 1);
+});
+
 test('ImageStore: jpg files round-trip and are swept like png files', async (t) => {
     const dir = tmpDir();
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

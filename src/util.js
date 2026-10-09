@@ -61,8 +61,8 @@ class MemoryCache {
         const entry = this.map.get(key);
         if (!entry) return undefined;
         const t = this.now();
-        if (t > entry.expires + this.staleMs) { this._drop(key); return undefined; }
-        if (t > entry.expires) return undefined;
+        if (t >= entry.expires + this.staleMs) { this._drop(key); return undefined; }
+        if (t >= entry.expires) return undefined;
         this.map.delete(key);
         this.map.set(key, entry);
         return entry.value;
@@ -72,15 +72,15 @@ class MemoryCache {
     getStale(key) {
         const entry = this.map.get(key);
         if (!entry) return undefined;
-        if (this.now() > entry.expires + this.staleMs) { this._drop(key); return undefined; }
+        if (this.now() >= entry.expires + this.staleMs) { this._drop(key); return undefined; }
         return entry.value;
     }
 
-    set(key, value) {
+    set(key, value, expires = this.now() + this.ttlMs) {
         this._drop(key);
         const size = this.sizeOf(value);
         if (size > this.maxBytes) return; // bigger than the whole budget: don't cache
-        this.map.set(key, { value, size, expires: this.now() + this.ttlMs });
+        this.map.set(key, { value, size, expires });
         this.bytes += size;
         while (this.map.size > this.maxEntries || this.bytes > this.maxBytes) {
             this._drop(this.map.keys().next().value);

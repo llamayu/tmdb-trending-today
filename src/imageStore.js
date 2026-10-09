@@ -5,6 +5,13 @@ const path = require('path');
 const { MemoryCache } = require('./util');
 
 const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+const nextLocalMidnight = (timestamp) => {
+    const date = new Date(timestamp);
+    date.setHours(24, 0, 0, 0);
+    return date.getTime();
+};
 
 /**
  * Generated-image cache.
@@ -13,13 +20,15 @@ const HOUR = 3_600_000;
  *  - sweep(): deletes expired files and, if the folder is still over budget, the oldest ones
  */
 class ImageStore {
-    constructor({ dir, ttlMs = 24 * HOUR, maxMemoryBytes = 96 * 1024 * 1024, maxDiskBytes = 1024 * 1024 * 1024, now = Date.now, logger = console }) {
+    constructor({ dir, ttlMs, maxMemoryBytes = 96 * 1024 * 1024, maxDiskBytes = 1024 * 1024 * 1024, now = Date.now, logger = console }) {
         this.dir = dir;
-        this.ttlMs = ttlMs;
+        this.expiresAt = ttlMs === undefined
+            ? nextLocalMidnight
+            : (timestamp) => timestamp + ttlMs;
         this.maxDiskBytes = maxDiskBytes;
         this.now = now;
         this.logger = logger;
-        this.memory = new MemoryCache({ ttlMs, maxBytes: maxMemoryBytes, sizeOf: (buf) => buf.length, now });
+        this.memory = new MemoryCache({ ttlMs: DAY, maxBytes: maxMemoryBytes, sizeOf: (buf) => buf.length, now });
         this.timers = [];
         this.dirReady = null;
     }
@@ -40,9 +49,10 @@ class ImageStore {
         try {
             const file = this.fileFor(key, ext);
             const stat = await fsp.stat(file);
-            if (this.now() - stat.mtimeMs > this.ttlMs) return null;
+            const expires = this.expiresAt(stat.mtimeMs);
+            if (this.now() >= expires) return null;
             const buffer = await fsp.readFile(file);
-            this.memory.set(key, buffer);
+            this.memory.set(key, buffer, expires);
             return buffer;
         } catch {
             return null;
@@ -51,7 +61,8 @@ class ImageStore {
 
     /** Never rejects: a failing disk must not fail the request that already has its image. */
     async set(key, buffer, ext = 'png') {
-        this.memory.set(key, buffer);
+        const createdAt = this.now();
+        this.memory.set(key, buffer, this.expiresAt(createdAt));
         const file = this.fileFor(key, ext);
         const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
         try {
@@ -85,8 +96,10 @@ class ImageStore {
 
         const keep = [];
         for (const f of files) {
-            const maxAge = f.tmp ? HOUR : this.ttlMs; // leftover temp files are garbage after an hour
-            if (t - f.mtime > maxAge) await remove(f);
+            const expired = f.tmp
+                ? t - f.mtime > HOUR
+                : t >= this.expiresAt(f.mtime);
+            if (expired) await remove(f);
             else keep.push(f);
         }
 

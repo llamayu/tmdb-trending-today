@@ -57,6 +57,9 @@ test('MemoryCache: TTL, stale window, LRU and byte cap', async (t) => {
         const cache = new MemoryCache({ ttlMs: 100, staleMs: 500, now: () => now });
         cache.set('a', 1);
         assert.equal(cache.get('a'), 1);
+        now = 1100;
+        assert.equal(cache.get('a'), undefined);
+        assert.equal(cache.getStale('a'), 1);
         now = 1150;
         assert.equal(cache.get('a'), undefined);
         assert.equal(cache.getStale('a'), 1);

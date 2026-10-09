@@ -7,22 +7,23 @@
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="{{FAVICON_URL}}" type="image/svg+xml">
 <style>
-:root{color-scheme:dark;--bg:#000;--card:#131315;--well:#0a0a0b;--fg:#f5f5f7;--mut:#a1a1a6;--dim:#78787d;--line:rgba(255,255,255,.09);--fill:rgba(255,255,255,.08);--thumb:#3a3a3c;--red:#b91d23;--r:20px}
+:root{color-scheme:dark;--bg:#000;--card:#131315;--well:#0a0a0b;--fg:#f5f5f7;--mut:#a1a1a6;--dim:#78787d;--line:rgba(255,255,255,.09);--fill:rgba(255,255,255,.08);--thumb:#3a3a3c;--red:#b91d23;--border-width:1px;--r-card:20px;--r-group:calc(var(--r-card) - 6px);--r-field:calc(var(--r-group) - 4px);--r-poster:calc(var(--r-group) - 2px)}
+@media(min-resolution:2dppx),(-webkit-min-device-pixel-ratio:2){:root{--border-width:.5px}}
 *{box-sizing:border-box;margin:0;padding:0}[hidden]{display:none!important}
 body{font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",Inter,"Segoe UI",system-ui,sans-serif;color:var(--fg);background:var(--bg);-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;min-height:100vh;overflow-x:hidden}
 @keyframes spin{to{transform:rotate(1turn)}}@keyframes pulse{50%{opacity:.5}}
 header{display:flex;align-items:center;gap:10px;max-width:1400px;margin:auto;padding:22px max(20px,4vw) 0}
 header svg{width:28px;height:28px}header b{font-weight:600;letter-spacing:-.01em}
 main{display:grid;grid-template-columns:minmax(360px,420px) minmax(0,1fr);gap:24px;max-width:1400px;margin:auto;padding:20px max(20px,4vw) 170px;align-items:stretch}
-.card{min-width:0;padding:24px;border-radius:var(--r);background:var(--card);border:1px solid var(--line)}
+.card{min-width:0;padding:24px;border-radius:var(--r-card);background:var(--card);border:var(--border-width) solid var(--line)}
 h2{font-size:12px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--dim);margin:24px 0 10px 6px}h2:first-child{margin-top:0}
-.group{background:var(--well);border:1px solid var(--line);border-radius:14px}
-.row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;min-height:52px}.row+.row{border-top:1px solid var(--line)}
+.group{background:var(--well);border:var(--border-width) solid var(--line);border-radius:var(--r-group)}
+.row{position:relative;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;min-height:52px}.row+.row{border-top:0}.row+.row::before{content:"";position:absolute;top:0;left:16px;right:0;border-top:var(--border-width) solid var(--line)}
 small{display:block;color:var(--dim);font-size:12px;line-height:1.35;margin-top:2px}
 .setting-title{display:flex;align-items:center;gap:7px}
-.beta-tag{padding:1px 5px;border:1px solid rgba(185,29,35,.55);border-radius:5px;color:#e46a6f;font-size:9px;font-weight:700;letter-spacing:.06em;line-height:1.4}
+.beta-tag{padding:1px 5px;border:var(--border-width) solid rgba(185,29,35,.55);border-radius:5px;color:#e46a6f;font-size:9px;font-weight:700;letter-spacing:.06em;line-height:1.4}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
-.chip{border:1px solid var(--line);background:none;color:var(--mut);font:inherit;font-size:13px;font-weight:600;padding:7px 15px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s,border-color .15s}
+.chip{border:var(--border-width) solid var(--line);background:none;color:var(--mut);font:inherit;font-size:13px;font-weight:600;padding:7px 15px;border-radius:99px;cursor:pointer;transition:background .15s,color .15s,border-color .15s,transform .12s}
 .chip:hover{color:var(--fg);background:var(--fill)}.chip[aria-pressed=true]{background:var(--red);border-color:var(--red);color:#fff}
 .sw{position:relative;width:46px;height:28px;flex:none}
 .sw input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:1}
@@ -34,15 +35,21 @@ small{display:block;color:var(--dim);font-size:12px;line-height:1.35;margin-top:
 .seg i{position:absolute;top:3px;bottom:3px;left:0;width:0;border-radius:8px;background:var(--thumb);box-shadow:0 1px 4px rgba(0,0,0,.35);transition:transform .2s ease,width .2s ease}
 .seg button{position:relative;z-index:1;border:0;background:none;font:inherit;font-size:13px;font-weight:600;padding:6px 15px;border-radius:8px;cursor:pointer;color:var(--mut);transition:color .15s}
 .seg button[aria-pressed=true]{color:var(--fg)}
-.field,select{appearance:none;-webkit-appearance:none;border:0;border-radius:10px;padding:8px 30px 8px 12px;font-family:inherit;font-size:13.5px;font-weight:500;color:var(--fg);cursor:pointer;text-align:left;max-width:100%;background:var(--fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 11px center}
+.field,select{appearance:none;-webkit-appearance:none;border:0;border-radius:var(--r-field);padding:8px 30px 8px 12px;font-family:inherit;font-size:13.5px;font-weight:500;color:var(--fg);cursor:pointer;text-align:left;max-width:100%;background:var(--fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 11px center}
 .ms{position:relative}.ms .field{min-width:170px}
-.opts{position:absolute;top:calc(100% + 6px);right:0;z-index:80;width:250px;max-height:min(280px,50vh);overflow:auto;padding:6px;border-radius:12px;background:#1c1c1e;border:1px solid var(--line);box-shadow:0 12px 32px rgba(0,0,0,.6);display:none}
+.opts{position:absolute;top:calc(100% + 6px);right:0;z-index:80;width:250px;max-height:min(280px,50vh);overflow:auto;padding:6px;border-radius:var(--r-group);background:#1c1c1e;border:var(--border-width) solid var(--line);box-shadow:0 12px 32px rgba(0,0,0,.6);display:none}
 .opts.show{display:block}.opts.up{top:auto;bottom:calc(100% + 6px)}
 .opts label{display:flex;align-items:center;justify-content:space-between;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:14px}
 .opts label:hover{background:var(--fill)}.opts input{display:none}
 .opts em{font-style:normal;font-weight:700;color:var(--red);opacity:0}.opts input:checked~em{opacity:1}
-.btn{display:inline-flex;align-items:center;justify-content:center;border:0;font:inherit;font-size:15px;font-weight:600;cursor:pointer;white-space:nowrap;height:40px;padding:0 18px;border-radius:12px;transition:background .15s,filter .15s}
-.copy{flex:none;background:rgba(255,255,255,.1);color:var(--fg)}.copy:hover{background:rgba(255,255,255,.16)}.copy.ok{color:var(--red)}
+.btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;font:inherit;font-size:15px;font-weight:600;cursor:pointer;white-space:nowrap;height:40px;padding:0 18px;border-radius:999px;transition:background .15s,filter .15s,transform .12s}
+.btn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.btn .icon-check{position:absolute;left:18px;top:calc(50% - 8.5px);opacity:0;transform:scale(.7);transition:opacity .16s,transform .16s}
+.btn .icon-copy{transition:opacity .16s,transform .16s}
+.btn.ok .icon-copy{opacity:0;transform:scale(.7)}
+.btn.ok .icon-check{opacity:1;transform:scale(1)}
+.btn:active,.chip:active,.seg button:active,.rail-arrow:active{transform:scale(.97)}
+.copy{flex:none;background:rgba(255,255,255,.1);color:var(--fg)}.copy:hover{background:rgba(255,255,255,.16)}.copy.ok{color:var(--fg)}
 .primary{flex:none;background:var(--red);color:#fff}.primary:hover{filter:brightness(1.1)}
 .ph{display:flex;align-items:center;gap:12px}.ph h2{margin:0}
 .spin{margin-left:auto;width:16px;height:16px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--red);opacity:0;transition:opacity .2s;animation:spin .8s linear infinite}
@@ -53,7 +60,7 @@ body.busy .spin{opacity:1}
 .rail-shell::before{left:0;background:linear-gradient(90deg,var(--card),transparent)}
 .rail-shell::after{right:0;background:linear-gradient(270deg,var(--card),transparent)}
 .rail-shell.scrollable:not(.at-start)::before,.rail-shell.scrollable:not(.at-end)::after{opacity:1}
-.rail-arrow{position:absolute;top:40%;z-index:3;display:flex;align-items:center;justify-content:center;width:40px;height:40px;padding:0;border:1px solid rgba(255,255,255,.18);border-radius:50%;background:rgba(28,28,30,.82);color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.35);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);opacity:0;visibility:hidden;pointer-events:none;cursor:pointer;transition:opacity .18s,transform .18s,visibility .18s}
+.rail-arrow{position:absolute;top:40%;z-index:3;display:flex;align-items:center;justify-content:center;width:40px;height:40px;padding:0;border:var(--border-width) solid rgba(255,255,255,.18);border-radius:50%;background:#1c1c1e;color:#fff;opacity:0;visibility:hidden;pointer-events:none;cursor:pointer;transition:opacity .18s,transform .18s,visibility .18s}
 .rail-arrow svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
 .rail-arrow.left{left:10px;transform:translateX(-4px)}
 .rail-arrow.right{right:10px;transform:translateX(4px)}
@@ -63,7 +70,8 @@ body.busy .spin{opacity:1}
 .rail{display:flex;gap:16px;overflow-x:auto;padding:6px 4px 16px;scrollbar-width:thin;scroll-behavior:smooth;overscroll-behavior-x:contain;transition:opacity .2s}
 .item{flex:none;display:flex;flex-direction:column;gap:10px;text-decoration:none;color:inherit}
 .item.portrait{width:150px}.item.landscape{width:280px}
-.pic{border-radius:12px;overflow:hidden;background:var(--fill)}
+.pic{border-radius:var(--r-poster);overflow:hidden;background:var(--fill);box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
+.sk.portrait,.sk.landscape{border-radius:var(--r-poster);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
 .item.portrait .pic{aspect-ratio:2/3}.item.landscape .pic{aspect-ratio:16/9}
 .item img{display:block;width:100%;height:100%;object-fit:cover;transition:filter .3s ease,opacity .3s ease,transform .3s ease}
 .item:hover img{opacity:.85}
@@ -73,16 +81,18 @@ body.busy .spin{opacity:1}
 .sk{flex:none;border-radius:12px;background:var(--fill);animation:pulse 1.4s ease-in-out infinite}
 .sk.portrait{width:150px;aspect-ratio:2/3}.sk.landscape{width:280px;aspect-ratio:16/9}
 .empty{color:var(--mut);padding:30px 0;width:100%;text-align:center}
-.dock{position:fixed;left:50%;bottom:max(14px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:70;width:min(1000px,calc(100% - 24px));display:flex;align-items:center;flex-wrap:wrap;gap:10px 12px;padding:10px 10px 10px 18px;border-radius:24px;background:rgba(24,24,26,.78);border:1px solid var(--line);-webkit-backdrop-filter:saturate(180%) blur(30px);backdrop-filter:saturate(180%) blur(30px);box-shadow:0 24px 60px -20px rgba(0,0,0,.85)}
+.dock{position:fixed;left:50%;bottom:max(14px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:70;width:min(1000px,calc(100% - 24px));display:flex;align-items:center;flex-wrap:wrap;gap:10px 12px;padding:10px 10px 10px 18px;border-radius:24px;background:rgba(24,24,26,.78);border:var(--border-width) solid var(--line);-webkit-backdrop-filter:saturate(180%) blur(30px);backdrop-filter:saturate(180%) blur(30px);box-shadow:0 24px 60px -20px rgba(0,0,0,.85)}
+.dock::before{content:"";position:absolute;top:0;left:24px;right:24px;height:var(--border-width);background:linear-gradient(90deg,transparent,rgba(255,255,255,.24) 18%,rgba(255,255,255,.24) 82%,transparent);pointer-events:none}
 .dock .sum{flex:0 0 auto;max-width:340px;font-size:13px;font-weight:500;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dock .hint{flex:1 1 100%;font-size:12.5px;color:var(--mut);padding-top:2px}
-.dock input[type=text]{flex:1;min-width:120px;height:40px;border:0;outline:0;border-radius:12px;padding:0 13px;background:rgba(255,255,255,.07);color:var(--mut);font:12px ui-monospace,"SF Mono",Menlo,monospace;text-overflow:ellipsis}
+.dock input[type=text]{flex:1;min-width:120px;height:40px;border:0;outline:0;border-radius:var(--r-field);padding:0 13px;background:rgba(255,255,255,.07);color:var(--mut);font:12px ui-monospace,"SF Mono",Menlo,monospace;text-overflow:ellipsis}
 @media(max-width:960px){main{grid-template-columns:1fr}}
 @media(max-width:1020px){.dock .sum{display:none}}
 @media(max-width:700px){
 main{padding:12px 12px 200px;gap:14px}
-.card{padding:16px;border-radius:18px}
+.card{padding:16px;--r-card:18px;--r-group:12px;--r-field:8px;--r-poster:10px}
 .row{flex-wrap:wrap;padding:12px 14px}
+.row+.row::before{left:14px}
 .row .seg,.row .ms,.row select{width:100%}.row .seg button{flex:1}
 .ms .field{width:100%;min-width:0}
 .opts{left:0;right:0;width:auto}
@@ -139,8 +149,15 @@ select{font-size:16px}
   <span class="sum" id="summary"></span>
   <div class="seg" data-target="mode" data-act="refreshDock"><i></i><button type="button" data-v="addon">Stremio</button><button type="button" data-v="aio">AIOMetadata</button></div><input type="hidden" id="mode" value="addon">
   <input type="text" id="dockUrl" readonly aria-label="Link to copy">
-  <button class="btn copy" type="button" data-copy="dockUrl">Copy</button>
-  <button class="btn primary" id="installBtn" type="button">Install</button>
+  <button class="btn copy" type="button" data-copy="dockUrl" aria-label="Copy link">
+    <svg class="icon-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>
+    <svg class="icon-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+    <span>Copy</span>
+  </button>
+  <button class="btn primary" id="installBtn" type="button">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5"/><path d="M5 17v3h14v-3"/></svg>
+    <span>Install</span>
+  </button>
   <input type="hidden" id="manifestUrl"><input type="hidden" id="patternUrl"><input type="hidden" id="landscapePatternUrl">
 </div>
 <script>
@@ -473,13 +490,20 @@ document.addEventListener('click', e => {
     const b = e.target.closest('[data-copy]');
     if (!b) return;
     const input = $(b.dataset.copy);
+    const label = b.querySelector('span');
     input.select();
     Promise.resolve(navigator.clipboard && navigator.clipboard.writeText(input.value))
         .catch(() => document.execCommand('copy'))
         .then(() => {
-            b.textContent = 'Copied ✓';
+            label.textContent = 'Copied';
+            b.setAttribute('aria-label', 'Link copied');
             b.classList.add('ok');
-            setTimeout(() => { b.textContent = 'Copy'; b.classList.remove('ok'); }, 1800);
+            clearTimeout(b._copyTimer);
+            b._copyTimer = setTimeout(() => {
+                label.textContent = 'Copy';
+                b.setAttribute('aria-label', 'Copy link');
+                b.classList.remove('ok');
+            }, 1800);
         });
 });
 
