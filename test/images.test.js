@@ -7,7 +7,7 @@ const path = require('path');
 const sharp = require('sharp');
 
 const { ImageStore } = require('../src/imageStore');
-const { createArtwork, LAYOUTS } = require('../src/artwork');
+const { createArtwork, LAYOUTS, buildTagComposites } = require('../src/artwork');
 const { createTmdbClient } = require('../src/tmdb');
 const { createApp } = require('../src/app');
 const { express, addonBuilder } = require('./helpers/miniExpress');
@@ -128,6 +128,23 @@ test('artwork: poster with tag + rank + provider logo', async () => {
     assert.ok(isPng(out.buffer));
     const meta = await png(out.buffer);
     assert.deepEqual([meta.width, meta.height], [500, 750]);
+});
+
+test('artwork: poster and background tags have a subtle rounded top-edge highlight', async () => {
+    for (const [width, height, heightRatio, fontRatio, y] of [
+        [500, 750, LAYOUTS.poster.tag.heightRatio, LAYOUTS.poster.tag.fontRatio, 682],
+        [1280, 720, LAYOUTS.backdrop.tag.heightRatio, LAYOUTS.backdrop.tag.fontRatio, 612],
+    ]) {
+        const image = await sharp({ create: { width, height, channels: 3, background: '#202020' } }).png().toBuffer();
+        const composites = await buildTagComposites(image, { width, height }, 'Now Streaming', heightRatio, fontRatio);
+        const { data, info } = await sharp(image).composite(composites).raw().toBuffer({ resolveWithObject: true });
+        const sample = (sampleY) => {
+            const offset = (sampleY * info.width + Math.floor(width / 2)) * info.channels;
+            return data[offset] + data[offset + 1] + data[offset + 2];
+        };
+
+        assert.ok(sample(y) > sample(y + 5) + 30, `${width}x${height} tag top border should be brighter than the fill`);
+    }
 });
 
 test('artwork: landscape rank font is 30% of backdrop height', () => {

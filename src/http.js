@@ -30,7 +30,7 @@ function parseImageQuery(query = {}) {
 
 /** URL extension -> format. `.png` URLs keep returning PNG, so existing installs and saved patterns are unaffected. */
 const IMAGE_TYPES = Object.freeze({ png: 'image/png', jpg: 'image/jpeg' });
-const ARTWORK_CACHE_VERSION = 'title-logo-svg-density-v6';
+const ARTWORK_CACHE_VERSION = 'all-tag-edge-highlight-v8';
 
 /** Cache / single-flight key: built from validated values only, so junk query params can't multiply cache entries. */
 const imageKey = (kind, id, p) => [

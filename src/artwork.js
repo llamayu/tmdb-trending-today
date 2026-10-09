@@ -28,7 +28,7 @@ const LAYOUTS = {
         preferEnglish: true,
         titleLogo: false,
         placeholder: { width: 500, height: 750, label: 'Poster Unavailable' },
-        tag: { heightRatio: 0.08, fontRatio: 0.60 },
+        tag: { heightRatio: 0.09, fontRatio: 0.625 },
         rank(w) {
             const fontSize = Math.round(w * 0.30);
             const padTop = Math.round(w * 0.08);
@@ -263,15 +263,17 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
     const { meanR, meanG, meanB, luminance } = colorInfo;
     const textColor = luminance > 140 ? '#121212' : '#ffffff';
 
-    // Blend the sampled colour towards white (dark text) or grey (light text)
-    const greyMixFactor = 0.25;
-    const blendTarget = textColor === '#121212' ? 255 : 128;
-    const adjR = Math.round(meanR + (blendTarget - meanR) * greyMixFactor);
-    const adjG = Math.round(meanG + (blendTarget - meanG) * greyMixFactor);
-    const adjB = Math.round(meanB + (blendTarget - meanB) * greyMixFactor);
+    // Bright artwork gets a light tint with dark text; everything else gets a deep tint with white text,
+    // so the label keeps strong contrast whatever the poster looks like.
+    const darkText = textColor === '#121212';
+    const blendTarget = darkText ? 255 : 0;
+    const mix = darkText ? 0.25 : 0.5;
+    const adjR = Math.round(meanR + (blendTarget - meanR) * mix);
+    const adjG = Math.round(meanG + (blendTarget - meanG) * mix);
+    const adjB = Math.round(meanB + (blendTarget - meanB) * mix);
 
     const tagFillColor = `rgb(${adjR}, ${adjG}, ${adjB})`;
-    let tagFillOpacity = '0.45';
+    let tagFillOpacity = '0.7';
     const composites = [];
 
     if (blurBuffer) {
@@ -283,12 +285,53 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
             .toBuffer();
         composites.push({ input: shapedBlur, top: extractTop, left: extractLeft });
     } else {
-        tagFillOpacity = '0.85';
+        tagFillOpacity = '0.88';
     }
+
+    // Light edge along the top, the rounded corners and down both sides. A vertical gradient keeps it brightest at the top and
+    // fades it to nothing by the bottom of the image, so the sides dissolve instead of ending abruptly. Its thickness
+    // scales with the tag so it reads the same on posters and backdrops. A horizontal mask keeps it brightest in the
+    // centre and softer toward the corners, which is what gives the tab its glassy highlight.
+    const edge = Math.max(2, Math.round(tagHeight * 0.03));
+    const edgePath = (inset) => {
+        const x0 = startX + inset, x1 = startX + tagWidth - inset, y0 = startY + inset;
+        const rr = Math.max(0, r - inset);
+        return `M ${x0},${height} L ${x0},${y0 + rr} Q ${x0},${y0} ${x0 + rr},${y0} L ${x1 - rr},${y0} Q ${x1},${y0} ${x1},${y0 + rr} L ${x1},${height}`;
+    };
+    // On bright artwork a white line has nothing to contrast with, so add a faint dark line just outside it.
+    const darkOutline = darkText
+        ? `<path d="${edgePath(-edge / 2)}" fill="none" stroke="url(#edgeDark)" stroke-width="${edge}"/>`
+        : '';
 
     const pillPath = `M ${startX},${height} L ${startX + tagWidth},${height} L ${startX + tagWidth},${startY + r} Q ${startX + tagWidth},${startY} ${startX + tagWidth - r},${startY} L ${startX + r},${startY} Q ${startX},${startY} ${startX},${startY + r} Z`;
     const tagSvg = `<svg ${XMLNS} width="${width}" height="${height}">
+        <defs>
+            <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="${startY}" x2="0" y2="${height}">
+                <stop offset="0" stop-color="#fff" stop-opacity="0.5"/>
+                <stop offset="0.2" stop-color="#fff" stop-opacity="0.3"/>
+                <stop offset="0.45" stop-color="#fff" stop-opacity="0.08"/>
+                <stop offset="0.7" stop-color="#fff" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="edgeDark" gradientUnits="userSpaceOnUse" x1="0" y1="${startY}" x2="0" y2="${height}">
+                <stop offset="0" stop-color="#000" stop-opacity="0.18"/>
+                <stop offset="0.2" stop-color="#000" stop-opacity="0.11"/>
+                <stop offset="0.45" stop-color="#000" stop-opacity="0.03"/>
+                <stop offset="0.7" stop-color="#000" stop-opacity="0"/>
+            </linearGradient>
+            <linearGradient id="edgeH" gradientUnits="userSpaceOnUse" x1="${startX}" y1="0" x2="${startX + tagWidth}" y2="0">
+                <stop offset="0" stop-color="#fff" stop-opacity="0.25"/>
+                <stop offset="0.5" stop-color="#fff" stop-opacity="1"/>
+                <stop offset="1" stop-color="#fff" stop-opacity="0.25"/>
+            </linearGradient>
+            <mask id="edgeMask" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}">
+                <rect x="0" y="0" width="${width}" height="${height}" fill="url(#edgeH)"/>
+            </mask>
+        </defs>
         <path d="${pillPath}" fill="${tagFillColor}" fill-opacity="${tagFillOpacity}"/>
+        <g mask="url(#edgeMask)">
+            ${darkOutline}
+            <path d="${edgePath(edge / 2)}" fill="none" stroke="url(#edge)" stroke-width="${edge}"/>
+        </g>
         <text x="${width / 2}" y="${startY + (tagHeight / 2) + (fontSize * 0.35)}" text-anchor="middle"
               font-family="${FONT_STACK}" font-size="${fontSize}" fill="${textColor}" font-weight="bold">${escapeXml(tagText)}</text>
     </svg>`;
@@ -356,21 +399,14 @@ async function buildTitleLogo(tmdb, logo, imageBuffer, width, height, layout, ha
     try {
         const buf = await tmdb.image('original', logo.file_path);
         const portrait = layout === LAYOUTS.poster;
-        const logoMetadata = await sharp(buf).metadata();
-        const targetWidth = Math.round(width * (portrait ? 0.84 : 0.50));
-        const targetHeight = Math.round(height * (portrait ? 0.25 : 0.40));
-        const scale = logoMetadata.width && logoMetadata.height
-            ? Math.min(targetWidth / logoMetadata.width, targetHeight / logoMetadata.height)
-            : 1;
-        const density = logoMetadata.format === 'svg' ? Math.max(72, Math.ceil(72 * scale * 2)) : undefined;
-        let source = sharp(buf, density ? { density } : {});
+        let source = sharp(buf);
         if (portrait) {
             source = source.trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 8 });
         }
         let resized = await source
             .resize({
-                width: targetWidth,
-                height: targetHeight,
+                width: Math.round(width * (portrait ? 0.84 : 0.50)),
+                height: Math.round(height * (portrait ? 0.25 : 0.40)),
                 fit: 'inside',
             })
             .png()
@@ -497,17 +533,9 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
             titleLogo = pickByLanguage(images.logos, [params.lang, originalLang, 'en']) || images.logos[0];
         }
         const titleText = titleExpected ? details.title || details.name : null;
-        let providerInfo = null;
-        if (params.logos) {
-            const providerDetails = { ...details, 'watch/providers': providers };
-            providerInfo = resolveProviderLogoInfo(tmdbType, providerDetails);
-            if (providerInfo?.isNetwork) {
-                // Only the raw network logo is available. If the network is itself a streaming service (Prime Video,
-                // Netflix...), TMDB's provider list has its proper icon. Decoration only: any failure keeps the network logo.
-                const catalog = await tmdb.json(`/watch/providers/${tmdbType}`, { watch_region: 'US' }).then((r) => r.results, () => null);
-                providerInfo = resolveProviderLogoInfo(tmdbType, providerDetails, catalog);
-            }
-        }
+        const providerInfo = params.logos
+            ? resolveProviderLogoInfo(tmdbType, { ...details, 'watch/providers': providers })
+            : null;
 
         const sourceSize = fallbackBackdrop ? LAYOUTS.backdrop.size : layout.size;
         const passthrough = { kind: 'redirect', url: tmdb.imageUrl(sourceSize, image.file_path) };
