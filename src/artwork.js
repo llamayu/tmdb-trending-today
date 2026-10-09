@@ -486,6 +486,12 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
                 image = (images.backdrops || []).find((candidate) => candidate.iso_639_1 === null && candidate.file_path);
             }
             image ||= standardImage;
+            // Textless art is only worth using when a title logo can replace the missing title;
+            // otherwise use the regular language-matched image, which already has its own title.
+            if (!images.logos?.length && standardImage?.file_path) {
+                image = standardImage;
+                fallbackBackdrop = false;
+            }
         }
         if (!image?.file_path) return { kind: 'placeholder', buffer: await placeholder(params.kind, format) };
 

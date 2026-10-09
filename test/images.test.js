@@ -19,7 +19,7 @@ const png = (buf) => sharp(buf).metadata();
 const isJpeg = (buf) => Buffer.isBuffer(buf) && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
 const isPng = (buf) => Buffer.isBuffer(buf) && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 
-// ─── ImageStore ──────────────────────────────────────────────────────────────
+// â”€â”€â”€ ImageStore â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 test('ImageStore: round trip through disk, TTL, atomic writes', async (t) => {
     const dir = tmpDir();
@@ -105,7 +105,7 @@ test('ImageStore.sweep: removes expired + leftover temp files, honours the size 
     assert.equal(await store.sweep(), 0);
 });
 
-// ─── Artwork renderer ────────────────────────────────────────────────────────
+// â”€â”€â”€ Artwork renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function artworkFor(fixtures) {
     const fake = createFakeTmdb(fixtures);
@@ -232,7 +232,7 @@ test('artwork: textless portrait falls back to a centered, portrait-cropped text
     const images = {
         posters: [{ iso_639_1: 'en', file_path: '/poster_en_1.jpg' }],
         backdrops: [{ iso_639_1: null, file_path: '/bd_null_1.jpg' }],
-        logos: [],
+        logos: [{ iso_639_1: 'en', file_path: '/logo_en_1.png' }],
     };
     const { artwork, fake } = artworkFor({ movies: [makeMovie(1, { images })] });
     const out = await artwork.render({ ...base, textless: true, tag: 'none', rank: 'none' });
@@ -241,43 +241,18 @@ test('artwork: textless portrait falls back to a centered, portrait-cropped text
     assert.equal(fake.count('/t/p/w1280/bd_null_1.jpg'), 1);
 });
 
-test('artwork: textless art without a title logo gets the regular title text', async () => {
+test('artwork: textless mode without any title logo uses the regular language-matched image', async () => {
     const images = { ...standardImages(1), logos: [] };
-    const poster = await sharp({ create: { width: 500, height: 750, channels: 3, background: '#446688' } }).jpeg().toBuffer();
-    const backdrop = await sharp({ create: { width: 1280, height: 720, channels: 3, background: '#446688' } }).jpeg().toBuffer();
-    const { artwork, fake } = artworkFor({
-        movies: [makeMovie(1, { images })],
-        cdnImages: {
-            '/t/p/w500/poster_null_1.jpg': poster,
-            '/t/p/w1280/bd_null_1.jpg': backdrop,
-        },
-    });
-
-    for (const [kind, imageBuffer] of [['poster', poster], ['backdrop', backdrop]]) {
-        const out = await artwork.render({ ...base, kind, textless: true });
-        assert.equal(out.kind, 'image');
-        const { data, info } = await sharp(out.buffer).raw().toBuffer({ resolveWithObject: true });
-        const source = await sharp(imageBuffer).raw().toBuffer();
-        const top = Math.floor(info.height * 0.68);
-        let hasTitleText = false;
-        let titleTop = info.height;
-        let titleBottom = -1;
-        for (let y = top; y < info.height; y++) {
-            for (let x = 0; x < info.width; x++) {
-                const offset = (y * info.width + x) * info.channels;
-                const sourceOffset = (y * info.width + x) * 3;
-                if (data[offset] > 220 && data[offset + 1] > 220 && data[offset + 2] > 220 &&
-                    source[sourceOffset] < 120 && source[sourceOffset + 1] < 150 && source[sourceOffset + 2] < 180) {
-                    hasTitleText = true;
-                    titleTop = Math.min(titleTop, y);
-                    titleBottom = Math.max(titleBottom, y);
-                }
-            }
-        }
-        assert.ok(hasTitleText, `${kind} textless artwork should include readable title text`);
-        assert.ok(titleBottom - titleTop > (kind === 'poster' ? 40 : 55), `${kind} fallback title uses the larger font size`);
-    }
-    assert.equal(fake.count('/t/p/original/logo_en_1.png'), 0);
+    const { artwork, fake } = artworkFor({ movies: [makeMovie(1, { images })] });
+    assert.deepEqual(await artwork.render({ ...base, textless: true }),
+        { kind: 'redirect', url: 'https://image.tmdb.org/t/p/w500/poster_en_1.jpg' });
+    assert.deepEqual(await artwork.render({ ...base, kind: 'backdrop', textless: true }),
+        { kind: 'redirect', url: 'https://image.tmdb.org/t/p/w1280/bd_en_1.jpg' });
+    // portrait no longer borrows a textless backdrop when there is no logo to put on it
+    const holder = artworkFor({ movies: [makeMovie(1, { images: { posters: [{ iso_639_1: 'en', file_path: '/poster_en_1.jpg' }], backdrops: [{ iso_639_1: null, file_path: '/bd_null_1.jpg' }], logos: [] } })] });
+    assert.equal((await holder.artwork.render({ ...base, textless: true })).kind, 'redirect');
+    assert.equal(holder.fake.count('/t/p/w1280/bd_null_1.jpg'), 0);
+    assert.equal(fake.count('/t/p/original/'), 0);
 });
 
 test('artwork: format=jpg produces a JPEG of the same size, png stays the default', async () => {
@@ -340,7 +315,7 @@ test('artwork: unknown title -> 404 error from TMDB', async () => {
     await assert.rejects(artwork.render({ ...base, id: '999' }), (err) => err.status === 404);
 });
 
-// ─── The whole app over HTTP (Express stand-in, fake TMDB, real sharp) ───────
+// â”€â”€â”€ The whole app over HTTP (Express stand-in, fake TMDB, real sharp) â”€â”€â”€â”€â”€â”€â”€
 
 function appFor(fixtures) {
     const fake = createFakeTmdb(fixtures);
