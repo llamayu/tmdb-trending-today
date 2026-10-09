@@ -14,8 +14,8 @@ function buildManifest(addonUrl) {
         types: ['movie', 'series'],
         idPrefixes: ['tmdb:'],
         catalogs: [
-            { id: 'top_movies_today', type: 'movie', name: 'Top Movies Today' },
             { id: 'top_shows_today', type: 'series', name: 'Top Shows Today' },
+            { id: 'top_movies_today', type: 'movie', name: 'Top Movies Today' },
         ],
     };
 }

@@ -203,7 +203,7 @@ test('catalog: survives a failed details request for one title', async () => {
 test('manifest keeps the identity existing installs rely on', () => {
     const m = buildManifest('https://addon.test');
     assert.equal(m.id, 'com.trending.custom');
-    assert.deepEqual(m.catalogs.map((c) => c.id), ['top_movies_today', 'top_shows_today']);
+    assert.deepEqual(m.catalogs.map((c) => c.id), ['top_shows_today', 'top_movies_today']);
     assert.equal(m.behaviorHints.configurationURL, 'https://addon.test/configure');
     assert.equal(m.logo, 'https://addon.test/favicon.svg');
 });
