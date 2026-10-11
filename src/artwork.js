@@ -309,8 +309,8 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
             <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="${startY}" x2="0" y2="${height}">
                 <stop offset="0" stop-color="#fff" stop-opacity="0.5"/>
                 <stop offset="0.2" stop-color="#fff" stop-opacity="0.3"/>
-                <stop offset="0.45" stop-color="#fff" stop-opacity="0.08"/>
-                <stop offset="0.7" stop-color="#fff" stop-opacity="0"/>
+                <stop offset="0.45" stop-color="#fff" stop-opacity="0.2"/>
+                <stop offset="0.9" stop-color="#fff" stop-opacity="0"/>
             </linearGradient>
             <linearGradient id="edgeDark" gradientUnits="userSpaceOnUse" x1="0" y1="${startY}" x2="0" y2="${height}">
                 <stop offset="0" stop-color="#000" stop-opacity="0.18"/>
