@@ -59,14 +59,16 @@ function express() {
         disable(name) { app.settings[name] = false; },
         use(fn) { stack.push({ method: null, regex: null, keys: [], handlers: [fn] }); },
         get(path, ...handlers) { stack.push({ method: 'GET', ...compile(path), handlers }); },
+        post(path, ...handlers) { stack.push({ method: 'POST', ...compile(path), handlers }); },
 
-        /** Dispatch a GET like a real request would be. Resolves with { status, headers, body, json() }. */
-        request(rawUrl) {
+        /** Dispatch a request like a real one would be (GET unless `method` says otherwise). Resolves with { status, headers, body, json() }. */
+        request(rawUrl, { method = 'GET', headers = {}, ip = '203.0.113.7' } = {}) {
             return new Promise((resolve, reject) => {
                 const url = new URL(rawUrl, 'http://test.local');
                 const query = {};
                 for (const [k, v] of url.searchParams) query[k] = v;
-                const req = { method: 'GET', originalUrl: url.pathname + url.search, path: url.pathname, query, params: {} };
+                const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+                const req = { method, ip, headers: lower, originalUrl: url.pathname + url.search, path: url.pathname, query, params: {} };
                 const res = createRes();
                 res._done = () => resolve({
                     status: res.statusCode,
@@ -78,6 +80,7 @@ function express() {
                 const handlers = [];
                 for (const layer of stack) {
                     if (layer.method === null) { handlers.push({ fn: layer.handlers[0], params: {} }); continue; }
+                    if (layer.method !== method) continue;
                     const m = layer.regex.exec(url.pathname);
                     if (!m) continue;
                     const params = {};
@@ -100,7 +103,7 @@ function express() {
                         return;
                     }
                     if (err) return reject(err);
-                    res.status(404).type('text').send(`Cannot GET ${url.pathname}`);
+                    res.status(404).type('text').send(`Cannot ${method} ${url.pathname}`);
                 };
                 next();
             });

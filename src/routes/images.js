@@ -1,12 +1,18 @@
 'use strict';
-const { createSingleFlight } = require('../util');
+const { createSingleFlight, MemoryCache } = require('../util');
 const { parseListLang } = require('../userConfig');
 const { normalizeTag } = require('../tags');
-const { IMAGE_TYPES, parseId, parseType, parseLang, parseImageQuery, imageKey, wrap, sendImage } = require('../http');
+const { NOOP_METRICS } = require('../metrics');
+const { IMAGE_TYPES, parseId, parseType, parseLang, parseImageQuery, imageKey, itemGroup, imageGroup, wrap, sendImage } = require('../http');
 
-function registerImageRoutes(app, { store, artwork, trending, tags, logger = console }) {
+const REDIRECT_TTL_MS = 6 * 3_600_000;
+
+function registerImageRoutes(app, { store, artwork, trending, tags, logger = console, metrics = NOOP_METRICS }) {
     // Concurrent requests for the same image share one render
     const flights = createSingleFlight();
+    // Titles that need nothing drawn are answered with a redirect to TMDB. Remember those answers for a while so a
+    // repeat request skips the disk lookup and the two TMDB lookups (the client is told to cache them for a day anyway).
+    const redirects = new MemoryCache({ ttlMs: REDIRECT_TTL_MS, maxEntries: 20_000 });
 
     // ── /poster/:id.(png|jpg) and /backdrop/:id.(png|jpg) ───────────────────
     // The extension picks the format. Old `.png` URLs keep returning PNG; new URLs are `.jpg` (much smaller).
@@ -17,12 +23,26 @@ function registerImageRoutes(app, { store, artwork, trending, tags, logger = con
         const params = { kind, id, format, ...parseImageQuery(req.query) };
         const key = imageKey(kind, id, params);
 
+        const knownRedirect = redirects.get(key);
+        if (knownRedirect) {
+            metrics.count('artwork.redirectCached');
+            res.set('Cache-Control', 'public, max-age=86400');
+            return res.redirect(302, knownRedirect);
+        }
+
+        const readStart = Date.now();
         const cached = await store.get(key, format);
-        if (cached) return sendImage(res, cached, format);
+        metrics.time('store.read', Date.now() - readStart);
+        if (cached) {
+            metrics.count('artwork.hit');
+            return sendImage(res, cached, format);
+        }
 
         const result = await flights.run(key, async () => {
             const rendered = await artwork.render(params);
+            metrics.count(`artwork.${rendered.kind}`); // image (freshly drawn) | redirect | placeholder
             if (rendered.kind === 'image') store.set(key, rendered.buffer, format); // fire-and-forget; set() never rejects
+            if (rendered.kind === 'redirect') redirects.set(key, rendered.url);
             return rendered;
         });
 
@@ -86,6 +106,15 @@ function registerImageRoutes(app, { store, artwork, trending, tags, logger = con
         app.get(`/image/:type/:id.${format}`, redirectPattern('poster', format));
         app.get(`/landscape/:type/:id.${format}`, redirectPattern('backdrop', format));
     }
+
+    /** Clear everything cached for one title, so its images are drawn again on the next request. */
+    async function invalidate(type, id) {
+        const group = itemGroup(type, id);
+        const remembered = redirects.deleteWhere((key) => imageGroup(key) === group);
+        const { memory, disk } = await store.invalidate(group);
+        return { images: Math.max(memory, disk), remembered };
+    }
+    return { invalidate };
 }
 
 module.exports = { registerImageRoutes };

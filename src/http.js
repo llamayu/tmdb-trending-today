@@ -47,6 +47,13 @@ const imageKey = (kind, id, p) => [
     p.titleStyle || '',
 ].join('|');
 
+/** Which title a cache key belongs to ("movie-603"), so everything cached for one title can be found and cleared together. */
+const itemGroup = (type, id) => `${type === 'series' ? 'series' : 'movie'}-${id}`;
+const imageGroup = (key) => {
+    const parts = String(key).split('|'); // [version, kind, format, type, id, ...] as built by imageKey
+    return itemGroup(parts[3], parts[4]);
+};
+
 // ─── Express helpers ─────────────────────────────────────────────────────────
 
 /** Express 4 doesn't catch rejected promises from async handlers; this forwards them to the error middleware. */
@@ -64,6 +71,8 @@ function errorHandler(logger = console) {
         const upstream = err?.name === 'TmdbError';
         const status = upstream ? (err.status === 404 ? 404 : 502) : 500;
         if (status !== 404) logger.error(`${req.method} ${String(req.originalUrl || '').split('?')[0]} failed:`, err?.message || err);
+        // picked up by the admin dashboard's error list (harmless when it is off)
+        if (res.locals) res.locals.statsError = { kind: upstream ? 'tmdb' : 'internal', message: err?.message || String(err) };
         res.set('Cache-Control', 'no-store');
         if (String(req.path || '').endsWith('.json')) {
             return res.status(status).json({ err: status === 404 ? 'Not found' : 'Internal Server Error' });
@@ -72,4 +81,4 @@ function errorHandler(logger = console) {
     };
 }
 
-module.exports = { IMAGE_TYPES, parseId, parseType, parseRank, parseLang, parseImageQuery, imageKey, wrap, sendImage, errorHandler };
+module.exports = { IMAGE_TYPES, parseId, parseType, parseRank, parseLang, parseImageQuery, imageKey, itemGroup, imageGroup, wrap, sendImage, errorHandler };

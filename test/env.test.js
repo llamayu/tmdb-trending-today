@@ -26,3 +26,13 @@ test('loadEnv: reports every problem at once', () => {
     assert.throws(() => loadEnv({ ...good, ADDON_URL: 'example.com' }), /ADDON_URL/);
     assert.throws(() => loadEnv({ ...good, IMAGE_FORMAT: 'gif' }), /IMAGE_FORMAT/);
 });
+
+test('IMAGE_CACHE_HOURS: defaults to 48, 0 means "until local midnight", junk is rejected', () => {
+    const { loadEnv } = require('../src/env');
+    const base = { TMDB_API_KEY: 'k', ADDON_URL: 'https://addon.test' };
+    assert.equal(loadEnv(base).imageCacheHours, 48);
+    assert.equal(loadEnv({ ...base, IMAGE_CACHE_HOURS: '' }).imageCacheHours, 48);
+    assert.equal(loadEnv({ ...base, IMAGE_CACHE_HOURS: '0' }).imageCacheHours, 0);
+    assert.equal(loadEnv({ ...base, IMAGE_CACHE_HOURS: '6' }).imageCacheHours, 6);
+    for (const bad of ['-1', 'abc', '5000']) assert.throws(() => loadEnv({ ...base, IMAGE_CACHE_HOURS: bad }), /IMAGE_CACHE_HOURS/, bad);
+});

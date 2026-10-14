@@ -20,11 +20,12 @@ const nextLocalMidnight = (timestamp) => {
  *  - sweep(): deletes expired files and, if the folder is still over budget, the oldest ones
  */
 class ImageStore {
-    constructor({ dir, ttlMs, maxMemoryBytes = 96 * 1024 * 1024, maxDiskBytes = 1024 * 1024 * 1024, now = Date.now, logger = console }) {
+    constructor({ dir, ttlMs, groupOf = () => '', maxMemoryBytes = 96 * 1024 * 1024, maxDiskBytes = 1024 * 1024 * 1024, now = Date.now, logger = console }) {
         this.dir = dir;
         this.expiresAt = ttlMs === undefined
             ? nextLocalMidnight
             : (timestamp) => timestamp + ttlMs;
+        this.groupOf = groupOf; // key -> group name (one title's images share one), so a whole group can be cleared at once
         this.maxDiskBytes = maxDiskBytes;
         this.now = now;
         this.logger = logger;
@@ -33,8 +34,27 @@ class ImageStore {
         this.dirReady = null;
     }
 
+    static safeGroup(group) { return String(group || '').replace(/[^a-z0-9-]/gi, ''); }
+
     fileFor(key, ext = 'png') {
-        return path.join(this.dir, `${crypto.createHash('sha256').update(key).digest('hex')}.${ext}`);
+        const group = ImageStore.safeGroup(this.groupOf(key));
+        return path.join(this.dir, `${group ? `${group}_` : ''}${crypto.createHash('sha256').update(key).digest('hex')}.${ext}`);
+    }
+
+    /** Drop every cached image of one group (memory and disk); the next request draws a fresh one. */
+    async invalidate(group) {
+        const memory = this.memory.deleteWhere((key) => this.groupOf(key) === group);
+        const prefix = `${ImageStore.safeGroup(group)}_`;
+        let disk = 0;
+        if (prefix === '_') return { memory, disk };
+        let names = [];
+        try { names = await fsp.readdir(this.dir); } catch { /* no cache folder yet */ }
+        for (const name of names) {
+            if (name.startsWith(prefix) && /\.(png|jpg)$/.test(name)) {
+                if (await fsp.rm(path.join(this.dir, name), { force: true }).then(() => true, () => false)) disk += 1;
+            }
+        }
+        return { memory, disk };
     }
 
     ensureDir() {

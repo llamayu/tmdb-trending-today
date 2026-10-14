@@ -26,6 +26,9 @@ function parseRetryAfter(header) {
  *  - identical concurrent requests share one round trip
  *  - successful JSON is cached for `ttlMs`, and served stale (up to `staleMs`) if TMDB is failing
  *  - cached JSON is deep-frozen: callers can't mutate data other requests are using
+ *  - downloaded images (poster/backdrop sources, title and streaming logos) are kept in a byte-capped cache and
+ *    concurrent downloads of the same file are shared: a TMDB file path never changes content, and the same logos
+ *    are needed by hundreds of renders
  *  - the API key never appears in errors or log lines
  */
 function createTmdbClient({
@@ -38,6 +41,8 @@ function createTmdbClient({
     retries = 2,
     maxConcurrent = 16,
     maxConcurrentImages = 8,
+    imageTtlMs = 12 * 3_600_000,
+    imageCacheBytes = 64 * 1024 * 1024,
     sleep = defaultSleep,
     logger = console,
 } = {}) {
@@ -47,6 +52,8 @@ function createTmdbClient({
     const flights = createSingleFlight();
     const apiLimit = createLimiter(maxConcurrent);
     const imageLimit = createLimiter(maxConcurrentImages);
+    const imageCache = new MemoryCache({ ttlMs: imageTtlMs, maxBytes: imageCacheBytes, sizeOf: (buf) => buf.length });
+    const imageFlights = createSingleFlight();
 
     async function fetchJson(url) {
         let lastError;
@@ -103,17 +110,28 @@ function createTmdbClient({
 
     const imageUrl = (size, filePath) => `${IMAGE_BASE}/${size}${filePath}`;
 
-    /** Download an image from TMDB's CDN. */
+    /** Download an image from TMDB's CDN (callers must treat the returned Buffer as read-only: it is shared). */
     async function image(size, filePath) {
         if (!IMAGE_FILE.test(filePath || '')) throw new TmdbError('Invalid image path', 400);
-        return imageLimit(async () => {
+        const key = `${size}${filePath}`;
+        const hit = imageCache.get(key);
+        if (hit !== undefined) return hit;
+        return imageFlights.run(key, () => imageLimit(async () => {
             const res = await fetchImpl(imageUrl(size, filePath), { signal: AbortSignal.timeout(timeoutMs) });
             if (!res.ok) throw new TmdbError(`Image CDN responded ${res.status}`, res.status);
-            return Buffer.from(await res.arrayBuffer());
-        });
+            const buffer = Buffer.from(await res.arrayBuffer());
+            imageCache.set(key, buffer);
+            return buffer;
+        }));
     }
 
-    return { json, image, imageUrl, cache };
+    /** Forget everything cached about one title (details, image list, providers...) so the next request asks TMDB again. */
+    function invalidate(type, id) {
+        const prefix = `${new URL(API_BASE).pathname}/${type}/${id}`;
+        return cache.deleteWhere((key) => key === prefix || key.startsWith(`${prefix}/`) || key.startsWith(`${prefix}?`));
+    }
+
+    return { json, image, imageUrl, cache, invalidate };
 }
 
 module.exports = { createTmdbClient, TmdbError };

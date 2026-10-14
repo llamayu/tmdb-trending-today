@@ -6,6 +6,9 @@
     "start": "node server.js",
     "test": "node --test"
   },
+  "optionalDependencies": {
+    "geoip-lite": "^1.4.10"
+  },
   "dependencies": {
     "express": "^4.21.0",
     "sharp": "^0.33.3",

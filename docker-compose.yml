@@ -7,3 +7,15 @@ services:
       - "7000:7000"
     env_file:
       - .env
+    # Leave one core free for your other addons: during poster bursts this container can otherwise use the whole machine
+    cpus: 3
+    # Docker keeps container logs forever by default; keep the last 30 MB (3 files of 10 MB)
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    volumes:
+      - ./data:/app/data
+      # Rendered images; survive rebuilds and restarts (without this the cache is wiped on every deploy)
+      - ./image-cache:/app/image-cache

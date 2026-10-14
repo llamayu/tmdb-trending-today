@@ -24,7 +24,8 @@ const escapeXml = (s) => String(s).replace(/[&<>"']/g, (c) => XML_ESCAPES[c]);
 const LAYOUTS = {
     poster: {
         imageList: 'posters',
-        size: 'w500',
+        size: 'w500', // what overlays are drawn on
+        passthroughSize: 'w500', // what is sent when there is nothing to draw
         preferEnglish: true,
         titleLogo: false,
         placeholder: { width: 500, height: 750, label: 'Poster Unavailable' },
@@ -41,7 +42,8 @@ const LAYOUTS = {
     },
     backdrop: {
         imageList: 'backdrops',
-        size: 'w1280',
+        size: 'w1280', // what overlays are drawn on
+        passthroughSize: 'original', // nothing to draw: send TMDB's full-resolution backdrop untouched
         preferEnglish: false,
         titleLogo: true,
         placeholder: { width: 1280, height: 720, label: 'No Background Available' },
@@ -74,6 +76,9 @@ function estimateTextWidth(text, fontSize) {
     return w;
 }
 
+// A colour estimate does not need every pixel: shrink the strip natively first, then average the few that remain
+const COLOUR_SAMPLE_WIDTH = 64;
+
 /** Average colour of the bottom half of the image; decides the tag's text colour and tint. */
 async function sampleBottomHalf(imageBuffer, metadata) {
     try {
@@ -81,6 +86,7 @@ async function sampleBottomHalf(imageBuffer, metadata) {
         const height = metadata.height - top;
         const { data, info } = await sharp(imageBuffer)
             .extract({ left: 0, top, width: metadata.width, height })
+            .resize({ width: COLOUR_SAMPLE_WIDTH, withoutEnlargement: true })
             .raw()
             .toBuffer({ resolveWithObject: true });
 
@@ -112,9 +118,12 @@ async function blurRegion(imageBuffer, region) {
 
 // ─── Overlays ────────────────────────────────────────────────────────────────
 
-/** Soft dark alpha halo so transparent logo edges remain readable on bright artwork. */
+/**
+ * Soft dark alpha halo so transparent logo edges remain readable on bright artwork.
+ * Built from native sharp steps (the old version looped over every pixel in JavaScript and blocked the server while it ran).
+ */
 async function buildLogoComposites(imageBuffer, left, top, canvasWidth, canvasHeight, { opacity, blur, padding }) {
-    const { data, info } = await sharp(imageBuffer)
+    const { data: alpha, info } = await sharp(imageBuffer)
         .ensureAlpha()
         .extractChannel(3)
         .raw()
@@ -125,16 +134,23 @@ async function buildLogoComposites(imageBuffer, left, top, canvasWidth, canvasHe
     const padBottom = Math.min(padding, canvasHeight - top - info.height);
     const shadowWidth = info.width + padLeft + padRight;
     const shadowHeight = info.height + padTop + padBottom;
-    const shadow = Buffer.alloc(shadowWidth * shadowHeight * 4);
-    for (let i = 0, j = 0; i < data.length; i++, j += 4) {
-        const x = i % info.width;
-        const y = Math.floor(i / info.width);
-        const shadowIndex = ((y + padTop) * shadowWidth + x + padLeft) * 4;
-        shadow[shadowIndex + 3] = Math.round(data[i] * opacity);
+
+    // Scale the logo's alpha by the shadow opacity (linear() widens a grey image to RGB, so take one channel back out)
+    const scaled = await sharp(alpha, { raw: { width: info.width, height: info.height, channels: 1 } })
+        .linear(opacity, 0)
+        .extractChannel(0)
+        .raw()
+        .toBuffer();
+    // Place it inside the padded canvas: one row copy per line, not one operation per pixel
+    const padded = Buffer.alloc(shadowWidth * shadowHeight);
+    for (let y = 0; y < info.height; y++) {
+        scaled.copy(padded, ((y + padTop) * shadowWidth) + padLeft, y * info.width, (y + 1) * info.width);
     }
-    const shadowBuffer = await sharp(shadow, {
-        raw: { width: shadowWidth, height: shadowHeight, channels: 4 },
-    }).blur(blur).png().toBuffer();
+    const shadowBuffer = await sharp({ create: { width: shadowWidth, height: shadowHeight, channels: 3, background: '#000000' } })
+        .joinChannel(padded, { raw: { width: shadowWidth, height: shadowHeight, channels: 1 } })
+        .blur(blur)
+        .png()
+        .toBuffer();
     return [
         { input: shadowBuffer, top: top - padTop, left: left - padLeft },
         { input: imageBuffer, top, left },
@@ -217,11 +233,20 @@ const pixelLuminance = (data, offset) =>
     (0.7152 * LINEAR_RGB[data[offset + 1]]) +
     (0.0722 * LINEAR_RGB[data[offset + 2]]);
 
+// The contrast check only needs the overall tone, so it compares small versions of the logo and of the artwork behind it
+const CONTRAST_SAMPLE_SIZE = 64;
+
 async function titleLogoContrast(imageBuffer, logoBuffer, left, top) {
-    const logo = await sharp(logoBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const background = await sharp(imageBuffer)
-        .extract({ left, top, width: logo.info.width, height: logo.info.height })
+    const full = await sharp(logoBuffer).metadata();
+    const logo = await sharp(logoBuffer)
         .ensureAlpha()
+        .resize({ width: CONTRAST_SAMPLE_SIZE, height: CONTRAST_SAMPLE_SIZE, fit: 'inside', withoutEnlargement: true })
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+    const background = await sharp(imageBuffer)
+        .extract({ left, top, width: full.width, height: full.height })
+        .ensureAlpha()
+        .resize({ width: logo.info.width, height: logo.info.height, fit: 'fill' })
         .raw()
         .toBuffer({ resolveWithObject: true });
     let logoLuminance = 0;
@@ -400,7 +425,7 @@ async function buildTitleLogo(tmdb, logo, imageBuffer, width, height, layout, ha
         const buf = await tmdb.image('original', logo.file_path);
         const portrait = layout === LAYOUTS.poster;
         let source = sharp(buf);
-        if (portrait) {
+        if (portrait && !String(logo.file_path).endsWith('.svg')) {
             source = source.trim({ background: { r: 0, g: 0, b: 0, alpha: 0 }, threshold: 8 });
         }
         let resized = await source
@@ -547,7 +572,8 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
             : null;
 
         const sourceSize = fallbackBackdrop ? LAYOUTS.backdrop.size : layout.size;
-        const passthrough = { kind: 'redirect', url: tmdb.imageUrl(sourceSize, image.file_path) };
+        const passthroughSize = fallbackBackdrop ? LAYOUTS.backdrop.passthroughSize : layout.passthroughSize;
+        const passthrough = { kind: 'redirect', url: tmdb.imageUrl(passthroughSize, image.file_path) };
         if (!fallbackBackdrop && !tagText && !rankText && !providerInfo && !titleLogo && !titleText) return passthrough; // nothing to draw
 
         let base = await tmdb.image(sourceSize, image.file_path);

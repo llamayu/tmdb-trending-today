@@ -1,4 +1,5 @@
 'use strict';
+const { AsyncResource } = require('async_hooks');
 
 /** Run at most `max` async tasks at a time; the rest wait in a FIFO queue. */
 function createLimiter(max) {
@@ -14,7 +15,9 @@ function createLimiter(max) {
                 .finally(() => { active--; pump(); });
         }
     };
-    return (fn) => new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); pump(); });
+    // A queued task runs in the context of whoever enqueued it (not of whichever task happened to free the slot),
+    // which keeps per-request timing attribution correct
+    return (fn) => new Promise((resolve, reject) => { queue.push({ fn: AsyncResource.bind(fn), resolve, reject }); pump(); });
 }
 
 /** Callers asking for the same key while work is in progress share one promise instead of repeating the work. */
@@ -88,6 +91,15 @@ class MemoryCache {
     }
 
     delete(key) { this._drop(key); }
+
+    /** Remove every entry whose key matches; returns how many were removed. */
+    deleteWhere(predicate) {
+        let removed = 0;
+        for (const key of [...this.map.keys()]) {
+            if (predicate(key)) { this._drop(key); removed += 1; }
+        }
+        return removed;
+    }
 }
 
 /** Freeze recursively so accidental mutation of shared cached data throws (in strict mode) instead of corrupting other requests. */

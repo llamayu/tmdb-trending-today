@@ -149,3 +149,45 @@ test('image() checks the response status', async () => {
 test('requires an api key', () => {
     assert.throws(() => createTmdbClient({}), /apiKey/);
 });
+
+test('image(): downloads are cached and shared while in flight; a different size is a different file', async () => {
+    let calls = 0;
+    const tmdb = client(async () => { calls++; await new Promise((r) => setTimeout(r, 10)); return new Response(Buffer.from('imagebytes'), { status: 200 }); });
+    const [a, b, c] = await Promise.all([tmdb.image('w500', '/a.jpg'), tmdb.image('w500', '/a.jpg'), tmdb.image('w500', '/a.jpg')]);
+    assert.equal(calls, 1);
+    assert.ok(a === b && b === c);
+    assert.equal(a.toString(), 'imagebytes');
+    await tmdb.image('w500', '/a.jpg');
+    assert.equal(calls, 1); // served from memory
+    await tmdb.image('w1280', '/a.jpg');
+    assert.equal(calls, 2);
+});
+
+test('image(): failures are not remembered', async () => {
+    let calls = 0;
+    let failing = true;
+    const tmdb = client(async () => { calls++; return failing ? new Response('no', { status: 500 }) : new Response(Buffer.from('ok'), { status: 200 }); });
+    await assert.rejects(tmdb.image('w500', '/b.jpg'), TmdbError);
+    failing = false;
+    assert.equal((await tmdb.image('w500', '/b.jpg')).toString(), 'ok');
+    assert.equal(calls, 2);
+});
+
+test('image(): the cache is capped by bytes, oldest first, and entries expire', async () => {
+    let calls = 0;
+    let t = 0;
+    const tmdb = createTmdbClient({
+        apiKey: 'k', sleep: async () => {}, logger: silent, imageCacheBytes: 25, imageTtlMs: 1000,
+        fetchImpl: async () => { calls++; return new Response(Buffer.alloc(10, 1), { status: 200 }); },
+    });
+    await tmdb.image('w500', '/a.jpg');
+    await tmdb.image('w500', '/b.jpg');
+    await tmdb.image('w500', '/c.jpg'); // 30 bytes > 25: the oldest (a) goes
+    assert.equal(calls, 3);
+    await tmdb.image('w500', '/c.jpg');
+    await tmdb.image('w500', '/b.jpg');
+    assert.equal(calls, 3); // b and c still cached
+    await tmdb.image('w500', '/a.jpg');
+    assert.equal(calls, 4); // a was evicted
+    void t;
+});

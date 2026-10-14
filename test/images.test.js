@@ -118,7 +118,7 @@ const netflix = { flatrate: [{ provider_name: 'Netflix', logo_path: '/nf.png' }]
 test('artwork: nothing to draw -> redirect to the right TMDB size', async () => {
     const { artwork } = artworkFor({ movies: [makeMovie(1)] });
     assert.deepEqual(await artwork.render(base), { kind: 'redirect', url: 'https://image.tmdb.org/t/p/w500/poster_en_1.jpg' });
-    assert.deepEqual(await artwork.render({ ...base, kind: 'backdrop', lang: 'null' }), { kind: 'redirect', url: 'https://image.tmdb.org/t/p/w1280/bd_null_1.jpg' });
+    assert.deepEqual(await artwork.render({ ...base, kind: 'backdrop', lang: 'null' }), { kind: 'redirect', url: 'https://image.tmdb.org/t/p/original/bd_null_1.jpg' });
 });
 
 test('artwork: poster with tag + rank + provider logo', async () => {
@@ -551,6 +551,28 @@ test('HTTP: image routes', async (t) => {
         assert.equal(ph.headers['content-type'], 'image/jpeg');
         assert.ok(isJpeg(ph.body));
         assert.equal(ph.headers['cache-control'], 'public, max-age=3600');
+    });
+
+    await t.test('nothing-to-draw answers are remembered, so a repeat costs no TMDB calls', async () => {
+        const url = '/poster/1.jpg?tag=none&rank=none&lang=fr';
+        fake.reset();
+        const first = await app.request(url);
+        assert.equal(first.status, 302);
+        assert.ok(fake.calls.length > 0, 'the first request has to look the title up');
+        fake.reset();
+        const second = await app.request(url);
+        assert.equal(second.status, 302);
+        assert.equal(second.headers.location, first.headers.location);
+        assert.equal(second.headers['cache-control'], 'public, max-age=86400');
+        assert.equal(fake.calls.length, 0);
+    });
+
+    await t.test('backdrop with nothing to draw -> full-resolution original from TMDB (posters stay w500)', async () => {
+        const res = await app.request('/backdrop/1.jpg?type=movie&tag=none&rank=none&lang=en&logos=0');
+        assert.equal(res.status, 302);
+        assert.match(res.headers.location, /^https:\/\/image\.tmdb\.org\/t\/p\/original\/bd_/);
+        const poster = await app.request('/poster/1.jpg?tag=none&rank=none');
+        assert.match(poster.headers.location, /\/t\/p\/w500\//);
     });
 
     await t.test('nothing to draw -> 302 to TMDB (not a permanent redirect)', async () => {
