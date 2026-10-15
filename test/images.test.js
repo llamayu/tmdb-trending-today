@@ -442,6 +442,9 @@ test('HTTP: addon routes', async (t) => {
         const configured = await app.request('/posterTags=false|listLang=en/manifest.json');
         assert.equal(configured.json().behaviorHints.configurationRequired, false);
         assert.equal(configured.json().behaviorHints.configurationURL, 'https://addon.test/posterTags=false|listLang=en/configure');
+        assert.notEqual(configured.json().id, res.json().id);
+        const otherSettings = await app.request('/posterTags=true|listLang=en/manifest.json');
+        assert.notEqual(otherSettings.json().id, configured.json().id);
     });
 
     await t.test('configure page is served with the favicon URL filled in', async () => {

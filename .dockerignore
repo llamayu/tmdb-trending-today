@@ -1,0 +1,18 @@
+# Keep secrets, history and local data out of the build (and out of the image layers)
+.git
+.gitignore
+.env
+.env.*
+node_modules
+npm-debug.log
+
+# Runtime data lives on volumes, never in the image
+data
+image-cache
+
+# Not needed to run the addon
+test
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore

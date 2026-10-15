@@ -1,6 +1,13 @@
 'use strict';
+const { createHash } = require('node:crypto');
 const { parseUserConfig } = require('./userConfig');
 const { CATALOG_SIZE } = require('./media');
+
+function configuredManifestId(rawConfig) {
+    const settings = JSON.stringify(parseUserConfig(rawConfig));
+    const fingerprint = createHash('sha256').update(settings).digest('hex');
+    return `com.trending.custom.${fingerprint}`;
+}
 
 function buildManifest(addonUrl) {
     return {
@@ -127,4 +134,4 @@ function createCatalog({ tmdb, trending, tags, genres, addonUrl, imageExt = 'jpg
     return { getCatalog };
 }
 
-module.exports = { buildManifest, createCatalog, CATALOG_CACHE_SECONDS, artUrl };
+module.exports = { buildManifest, configuredManifestId, createCatalog, CATALOG_CACHE_SECONDS, artUrl };

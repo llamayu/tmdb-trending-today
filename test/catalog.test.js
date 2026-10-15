@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createTmdbClient } = require('../src/tmdb');
 const { parseMovieReleases, createTrending, createGenres, createTagResolver, isOut } = require('../src/media');
-const { createCatalog, buildManifest } = require('../src/catalog');
+const { createCatalog, buildManifest, configuredManifestId } = require('../src/catalog');
 const { NOW, iso, makeMovie, makeShow, createFakeTmdb } = require('./helpers/fakeTmdb');
 
 const silent = { warn() {}, error() {}, log() {} };
@@ -206,4 +206,10 @@ test('manifest keeps the identity existing installs rely on', () => {
     assert.deepEqual(m.catalogs.map((c) => c.id), ['top_shows_today', 'top_movies_today']);
     assert.equal(m.behaviorHints.configurationURL, 'https://addon.test/configure');
     assert.equal(m.logo, 'https://addon.test/favicon.svg');
+});
+
+test('configured manifest IDs are stable per normalized settings combination', () => {
+    const englishDefaults = configuredManifestId({ listLang: 'en' });
+    assert.equal(configuredManifestId({ posterTags: 'true', listLang: 'en' }), englishDefaults);
+    assert.notEqual(configuredManifestId({ listLang: 'fr' }), englishDefaults);
 });
