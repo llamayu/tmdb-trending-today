@@ -265,8 +265,55 @@ async function titleLogoContrast(imageBuffer, logoBuffer, left, top) {
     return (Math.max(logoMean, backgroundMean) + 0.05) / (Math.min(logoMean, backgroundMean) + 0.05);
 }
 
-/** Frosted-glass pill along the bottom edge, containing `tagText`. Returns sharp composite operations. */
-async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, fontRatio) {
+// How far above the tag the artwork is looked at to decide what colour the tag's edge "reflects" (share of the image height)
+const REFLECT_LOOKUP = 0.1;
+const REFLECT_SEGMENTS = 5; // colours are taken per slice across the tag, so the highlight can shift hue from left to right
+
+/**
+ * Average colour of the strip of artwork directly above the tag, in `segments` slices from left to right, as [r, g, b] each.
+ * `raw` ({ width, height, channels }) says the buffer is uncompressed pixels rather than an encoded image.
+ * Returns null if the strip can't be read (the edge then stays white).
+ */
+async function sampleReflection(imageBuffer, region, segments = REFLECT_SEGMENTS, raw = null) {
+    if (!(region.width > 0 && region.height > 0)) return null;
+    try {
+        const { data } = await sharp(imageBuffer, raw ? { raw } : undefined)
+            .extract(region)
+            .removeAlpha()
+            .toColourspace('srgb')
+            .resize({ width: segments, height: 1, fit: 'fill' }) // shrinking averages every pixel of the slice
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+        return Array.from({ length: segments }, (_, i) => [data[i * 3], data[i * 3 + 1], data[i * 3 + 2]]);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Turn a sampled colour into the colour of a glassy highlight. An average over a whole strip of artwork is usually a muddy,
+ * washed-out tone, so its saturation is pushed up first (grey stays grey); then it is lifted slightly toward white so it reads
+ * as light catching the edge, and finally brought up to a minimum brightness (keeping its hue) so it stays visible above a
+ * dark poster.
+ */
+const REFLECT_SATURATION = 1.8;
+const REFLECT_LIFT = 0.12;
+const REFLECT_MIN_BRIGHTNESS = 200;
+function reflectColour([r, g, b]) {
+    const luma = (0.299 * r) + (0.587 * g) + (0.114 * b);
+    const clamp = (v) => Math.max(0, Math.min(255, v));
+    const vivid = [r, g, b].map((v) => clamp(luma + (v - luma) * REFLECT_SATURATION));
+    const lifted = vivid.map((v) => v + (255 - v) * REFLECT_LIFT);
+    const scale = Math.max(1, REFLECT_MIN_BRIGHTNESS / Math.max(...lifted));
+    return lifted.map((v) => Math.min(255, Math.round(v * scale)));
+}
+
+/**
+ * Frosted-glass pill along the bottom edge, containing `tagText`. Returns sharp composite operations.
+ * `reflectionSource` ({ buffer, raw }) is what the edge reflects when that differs from the bare artwork: the poster as it looks
+ * with the title logo already drawn on it, since the logo sits just above the tag. The tint and text colour still come from the bare artwork.
+ */
+async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, fontRatio, reflectionSource = null) {
     const { width, height } = metadata;
     const tagHeight = Math.round(height * heightRatio);
     const fontSize = Math.round(tagHeight * fontRatio);
@@ -280,9 +327,12 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
     const extractWidth = Math.min(tagWidth, width - extractLeft);
     const extractHeight = Math.min(tagHeight, height - extractTop);
 
-    const [colorInfo, blurBuffer] = await Promise.all([
+    // The strip of artwork just above the tag: what the glass would be catching light from
+    const bandTop = Math.max(0, startY - Math.round(height * REFLECT_LOOKUP));
+    const [colorInfo, blurBuffer, reflection] = await Promise.all([
         sampleBottomHalf(imageBuffer, metadata),
         blurRegion(imageBuffer, { left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight }),
+        sampleReflection(reflectionSource?.buffer || imageBuffer, { left: extractLeft, top: bandTop, width: extractWidth, height: Math.max(0, extractTop - bandTop) }, REFLECT_SEGMENTS, reflectionSource?.raw || null),
     ]);
 
     const { meanR, meanG, meanB, luminance } = colorInfo;
@@ -313,10 +363,15 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
         tagFillOpacity = '0.88';
     }
 
-    // Light edge along the top, the rounded corners and down both sides. A vertical gradient keeps it brightest at the top and
-    // fades it to nothing by the bottom of the image, so the sides dissolve instead of ending abruptly. Its thickness
-    // scales with the tag so it reads the same on posters and backdrops. A horizontal mask keeps it brightest in the
-    // centre and softer toward the corners, which is what gives the tab its glassy highlight.
+    // Light edge along the top, the rounded corners and down both sides. Its colour comes from the artwork just above the tag
+    // (sampled in slices, so it can shift from left to right), as if the glass were reflecting it; white if that can't be read.
+    // A vertical mask keeps it brightest at the top and fades it to nothing by the bottom of the image, so the sides dissolve
+    // instead of ending abruptly. Its thickness scales with the tag so it reads the same on posters and backdrops. A
+    // horizontal mask keeps it brightest in the centre and softer toward the corners, which is what gives the tab its glassy highlight.
+    const edgeColours = reflection ? reflection.map(reflectColour) : [[255, 255, 255]];
+    const edgeColourStops = edgeColours.length === 1
+        ? `<stop offset="0" stop-color="rgb(${edgeColours[0].join(',')})"/>`
+        : edgeColours.map((c, i) => `<stop offset="${(i / (edgeColours.length - 1)).toFixed(3)}" stop-color="rgb(${c.join(',')})"/>`).join('');
     const edge = Math.max(2, Math.round(tagHeight * 0.03));
     const edgePath = (inset) => {
         const x0 = startX + inset, x1 = startX + tagWidth - inset, y0 = startY + inset;
@@ -331,7 +386,10 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
     const pillPath = `M ${startX},${height} L ${startX + tagWidth},${height} L ${startX + tagWidth},${startY + r} Q ${startX + tagWidth},${startY} ${startX + tagWidth - r},${startY} L ${startX + r},${startY} Q ${startX},${startY} ${startX},${startY + r} Z`;
     const tagSvg = `<svg ${XMLNS} width="${width}" height="${height}">
         <defs>
-            <linearGradient id="edge" gradientUnits="userSpaceOnUse" x1="0" y1="${startY}" x2="0" y2="${height}">
+            <linearGradient id="edgeColor" gradientUnits="userSpaceOnUse" x1="${startX}" y1="0" x2="${startX + tagWidth}" y2="0">
+                ${edgeColourStops}
+            </linearGradient>
+            <linearGradient id="edgeV" gradientUnits="userSpaceOnUse" x1="0" y1="${startY}" x2="0" y2="${height}">
                 <stop offset="0" stop-color="#fff" stop-opacity="0.5"/>
                 <stop offset="0.2" stop-color="#fff" stop-opacity="0.3"/>
                 <stop offset="0.45" stop-color="#fff" stop-opacity="0.2"/>
@@ -351,11 +409,14 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
             <mask id="edgeMask" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}">
                 <rect x="0" y="0" width="${width}" height="${height}" fill="url(#edgeH)"/>
             </mask>
+            <mask id="edgeMaskV" maskUnits="userSpaceOnUse" x="0" y="0" width="${width}" height="${height}">
+                <rect x="0" y="0" width="${width}" height="${height}" fill="url(#edgeV)"/>
+            </mask>
         </defs>
         <path d="${pillPath}" fill="${tagFillColor}" fill-opacity="${tagFillOpacity}"/>
         <g mask="url(#edgeMask)">
             ${darkOutline}
-            <path d="${edgePath(edge / 2)}" fill="none" stroke="url(#edge)" stroke-width="${edge}"/>
+            <g mask="url(#edgeMaskV)"><path d="${edgePath(edge / 2)}" fill="none" stroke="url(#edgeColor)" stroke-width="${edge}"/></g>
         </g>
         <text x="${width / 2}" y="${startY + (tagHeight / 2) + (fontSize * 0.35)}" text-anchor="middle"
               font-family="${FONT_STACK}" font-size="${fontSize}" fill="${textColor}" font-weight="bold">${escapeXml(tagText)}</text>
@@ -591,17 +652,32 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
         const buffer = await limit(async () => {
             const { width, height } = await sharp(base).metadata();
             const meta = { width, height };
-            const [tagOps, providerOps, titleOps] = await Promise.all([
-                tagText ? buildTagComposites(base, meta, tagText, layout.tag.heightRatio, layout.tag.fontRatio) : [],
+            const [providerOps, titleOps] = await Promise.all([
                 providerInfo ? buildProviderLogo(tmdb, providerInfo, layout, width, height, logger) : null,
                 titleLogo ? buildTitleLogo(tmdb, titleLogo, base, width, height, layout, Boolean(tagText), logger) : null,
             ]);
+            const titleTextOp = titleText && !titleOps?.length
+                ? buildTitleTextComposite(titleText, width, height, layout, Boolean(tagText))
+                : null;
+
+            // The title sits just above the tag, so the tag's edge should reflect the poster as it looks with the title on it.
+            // Draw the title (logo, its fade and shadow, or the text title) onto the bare artwork once, as raw pixels, for sampling.
+            let reflectionSource = null;
+            const titleLayer = [...(titleOps || []), titleTextOp].filter(Boolean);
+            if (tagText && titleLayer.length) {
+                try {
+                    const { data, info } = await sharp(base).composite(titleLayer).raw().toBuffer({ resolveWithObject: true });
+                    reflectionSource = { buffer: data, raw: { width: info.width, height: info.height, channels: info.channels } };
+                } catch (err) {
+                    logger.warn?.(`Tag reflection fell back to the bare artwork: ${err.message}`);
+                }
+            }
+            const tagOps = tagText ? await buildTagComposites(base, meta, tagText, layout.tag.heightRatio, layout.tag.fontRatio, reflectionSource) : [];
+
             const ops = [
                 ...(providerOps || []),
                 ...(titleOps || []),
-                titleText && !titleOps?.length
-                    ? buildTitleTextComposite(titleText, width, height, layout, Boolean(tagText))
-                    : null,
+                titleTextOp,
                 rankText ? buildRankComposite(layout, rankText, width, height) : null,
                 ...tagOps,
             ].filter(Boolean);
@@ -615,4 +691,4 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
     return { render };
 }
 
-module.exports = { createArtwork, LAYOUTS, escapeXml, estimateTextWidth, sampleBottomHalf, buildTagComposites, buildRankComposite };
+module.exports = { createArtwork, LAYOUTS, escapeXml, estimateTextWidth, sampleBottomHalf, sampleReflection, reflectColour, buildTagComposites, buildRankComposite };

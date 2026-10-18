@@ -6,6 +6,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { monitorEventLoopDelay } = require('perf_hooks');
 const { parseUserConfig, parseConfigSegment } = require('./userConfig');
+const { createHostReader, measureDir, cpuShares, MB } = require('./host');
 
 /**
  * Usage statistics for the admin dashboard.
@@ -23,7 +24,9 @@ const MAX_VISITORS = 500_000; // safety cap on the visitor index
 const FLUSH_MS = 60_000;
 const MAP_CAP = 500; // distinct keys per counter per day, so junk URLs can't grow memory without bound
 const SLOW_MS = 1500;
-const SAMPLE_MS = 15_000; // how often CPU, memory and event-loop lag are sampled
+const SAMPLE_MS = 15_000; // how often CPU, memory, event-loop lag and the host figures are sampled
+const HISTORY_MAX = 240; // live readings kept in memory for the System view's sparklines: 240 x 15 s = the last hour
+const CACHE_MEASURE_MS = 10 * 60_000; // how often the image cache folder is measured (it walks every file)
 // Upper bounds (ms) of the timing histogram; one extra slot counts everything above the last bound
 const BUCKETS = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10_000];
 
@@ -162,6 +165,19 @@ const mergeCounts = (target, source = {}) => { for (const [k, v] of Object.entri
 
 const newTiming = () => ({ count: 0, total: 0, max: 0, buckets: Array(BUCKETS.length + 1).fill(0) });
 const newProc = () => ({ samples: 0, cpuSum: 0, cpuMax: 0, lagP99Max: 0, lagMax: 0, rssMax: 0 });
+// Whole-machine and container figures, folded into one small record per day (sums and peaks, like proc)
+const newHost = () => ({
+    starts: 0, // process starts, i.e. restarts and deploys
+    cpuSamples: 0, busySum: 0, busyMax: 0, ioSum: 0, ioMax: 0, stealSum: 0, stealMax: 0,
+    loadSamples: 0, loadSum: 0, loadMax: 0,
+    memSamples: 0, availPctSum: 0, availPctMin: 100, lowMem: 0, memTotal: 0, swapTotal: 0, swapUsedMax: 0,
+    periods: 0, throttled: 0, throttledUs: 0, cpuLimit: 0, // CPU cap: scheduling periods, periods that hit the cap, time held back
+    ctrUsedMax: 0, ctrLimit: 0, ctrPctMax: 0, // this container's memory
+    disk: {}, // label -> { total, pctMax }
+    cacheMax: 0, cacheFiles: 0,
+});
+const LOW_MEM_PCT = 10; // "memory has been under 10% free"
+const DISK_WARN_PCT = 85;
 
 /** Approximate percentile from histogram buckets (reports the bucket's upper bound, never above the real maximum). */
 function percentile(t, q) {
@@ -176,7 +192,7 @@ function percentile(t, q) {
 }
 
 const newDay = () => ({
-    perf: {}, counts: {}, gauges: {}, proc: newProc(), // performance: timings, counters, peaks, process samples
+    perf: {}, counts: {}, gauges: {}, proc: newProc(), host: newHost(), // performance: timings, counters, peaks, process and machine samples
     requests: 0, errors: 0, clientErrors: 0, errorLog: {}, // errorLog: what the 5xx responses were
     routes: {}, uas: {}, // uas: raw user agent -> { requests, routes, users }
     timing: { count: 0, totalMs: 0, maxMs: 0, slow: 0 },
@@ -197,14 +213,14 @@ function reviveDay(d) {
     if (d.summary) return d;
     // (older files also carried per-day country/client/setup sets; those now live in the visitor index)
     const { countries, agents, presets, options, ...rest } = d;
-    return { ...newDay(), ...rest, users: new Set(d.users), installs: new Set(d.installs), configure: new Set(d.configure), uas: reviveUas(d.uas) };
+    return { ...newDay(), ...rest, host: { ...newHost(), ...d.host }, users: new Set(d.users), installs: new Set(d.installs), configure: new Set(d.configure), uas: reviveUas(d.uas) };
 }
 /** Older than the detail window: keep the numbers (visitor sets and per-client detail are dropped). */
 function compactDay(d) {
     if (d.summary) return d;
     return {
         summary: true, requests: d.requests, errors: d.errors, clientErrors: d.clientErrors, routes: d.routes,
-        perf: d.perf, counts: d.counts, gauges: d.gauges, proc: d.proc, timing: d.timing,
+        perf: d.perf, counts: d.counts, gauges: d.gauges, proc: d.proc, host: d.host, timing: d.timing,
         totals: { users: d.users.size, installs: d.installs.size, configure: d.configure.size },
     };
 }
@@ -288,9 +304,83 @@ function performanceHints(p) {
     return out;
 }
 
+// ─── Server hints ────────────────────────────────────────────────────────────
+
+const fmtBytes = (b) => (b >= 1024 * MB ? `${(b / (1024 * MB)).toFixed(b >= 10 * 1024 * MB ? 0 : 1)} GiB` : `${Math.round(b / MB)} MiB`); // memory
+const fmtDisk = (b) => (b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : `${Math.round(b / 1e9)} GB`); // disks, decimal like the VPS provider
+const fmtPct = (x) => (x > 0 && x < 1 ? '<1%' : `${Math.round(x)}%`);
+
+/**
+ * Plain-language reading of the server numbers. Each hint is { level: 'warn' | 'ok' | 'muted', text }:
+ * warnings first, then reassurance. `s` is the object built by report().server.
+ */
+function serverHints(s) {
+    const warn = [];
+    const ok = [];
+    const muted = [];
+    const add = (list, text, area) => list.push({ level: list === warn ? 'warn' : list === ok ? 'ok' : 'muted', area, text });
+
+    if (!s.available) {
+        add(muted, 'This machine does not expose host figures (they need Linux, so they show up on the VPS but not on a Mac).', 'general');
+        return muted;
+    }
+    if (s.samples < 4) {
+        add(muted, `Collecting server samples (one every ${SAMPLE_MS / 1000} seconds), ${s.samples} so far.`, 'general');
+    }
+
+    const t = s.throttle;
+    if (t && t.periods >= 100) {
+        const cores = s.cpuLimit ? +s.cpuLimit.toFixed(2) : null;
+        const limit = cores ? `${cores} core${cores === 1 ? '' : 's'}` : 'its limit';
+        const cap = cores ? `${cores}-core CPU cap` : 'CPU cap';
+        if (t.pct >= 5) {
+            add(warn, `CPU was throttled ${fmtPct(t.pct)} of the time (${t.heldBackSec >= 60 ? `${Math.round(t.heldBackSec / 60)} min` : `${Math.round(t.heldBackSec)} s`} held back in total). The container is hitting its ${cap}, so renders slow down at those moments; consider raising the limit.`, 'throttle');
+        } else if (t.pct < 1) {
+            add(ok, `The CPU cap (${limit}) is not holding the addon back: throttled ${fmtPct(t.pct)} of the time.`, 'throttle');
+        }
+    }
+
+    for (const d of s.disks) {
+        if (d.pct >= DISK_WARN_PCT) add(warn, `Disk "${d.label}" is ${Math.round(d.pct)}% full (${fmtDisk(d.free)} free of ${fmtDisk(d.total)}). When it fills up, the stats file and image cache cannot be written.`, 'disk');
+        else if (d.pctMax >= DISK_WARN_PCT) add(warn, `Disk "${d.label}" reached ${Math.round(d.pctMax)}% full earlier in this range (${Math.round(d.pct)}% now).`, 'disk');
+    }
+
+    const m = s.memory;
+    if (m.samples && m.availPctMin < LOW_MEM_PCT && m.lowShare >= 0.01) {
+        add(warn, `Memory has been under ${LOW_MEM_PCT}% free for ${fmtPct(m.lowShare * 100)} of the time (lowest ${Math.round(m.availPctMin)}%, of ${fmtBytes(m.total)}). At zero, Linux starts killing processes.`, 'memory');
+    }
+    if (m.swapTotal && m.swapUsedMax > 0.25 * m.swapTotal) {
+        add(warn, `Swap was in use, up to ${fmtBytes(m.swapUsedMax)} of ${fmtBytes(m.swapTotal)}. The machine ran short of RAM and moved memory to disk, which is slow.`, 'memory');
+    }
+    if (m.container.limit && m.container.pctMax >= 90) {
+        add(warn, `The container used up to ${Math.round(m.container.pctMax)}% of its ${fmtBytes(m.container.limit)} memory limit. Past it, the addon is restarted.`, 'memory');
+    }
+
+    if (s.cpu.samples) {
+        if (s.cpu.stealAvg >= 5 || s.cpu.stealMax >= 20) {
+            add(warn, `The hypervisor took up to ${Math.round(s.cpu.stealMax)}% of CPU time (${fmtPct(s.cpu.stealAvg)} on average). Your VM shares a busy physical host; a higher CPU limit would not help.`, 'cpu');
+        }
+        if (s.cpu.iowaitAvg >= 10) {
+            add(warn, `The CPU waited on the disk ${fmtPct(s.cpu.iowaitAvg)} of the time on average (peak ${Math.round(s.cpu.iowaitMax)}%). Storage is the slow part.`, 'cpu');
+        }
+        if (s.cpu.busyMax >= 90) {
+            add(warn, `The whole machine reached ${Math.round(s.cpu.busyMax)}% CPU busy at its peak (averaging ${fmtPct(s.cpu.busyAvg)}), including your other addons.`, 'cpu');
+        }
+    }
+    if (s.load.samples && s.cores && s.load.max1 > 1.5 * s.cores) {
+        add(warn, `Load average peaked at ${s.load.max1.toFixed(1)} on ${s.cores} core${s.cores === 1 ? '' : 's'}: more work was waiting to run than the machine could do at once.`, 'cpu');
+    }
+    if (s.uptime.restarts >= 3) {
+        add(warn, `The addon started ${s.uptime.restarts} times in this range. Frequent restarts usually mean crashes or running out of memory; check \`docker compose logs\`.`, 'uptime');
+    }
+
+    if (!warn.length && s.samples >= 4) add(ok, 'Nothing on the server looks strained.', 'general');
+    return [...warn, ...ok, ...muted];
+}
+
 // ─── Stats ───────────────────────────────────────────────────────────────────
 
-function createStats({ dir, now = () => new Date(), logger = console, geo = lazyGeoip(), autoFlush = true, sampleProcess = autoFlush, renderConcurrency, timezone = 'UTC' } = {}) {
+function createStats({ dir, now = () => new Date(), logger = console, geo = lazyGeoip(), autoFlush = true, sampleProcess = autoFlush, renderConcurrency, timezone = 'UTC', host, volumes = [], cacheDir, cacheBudget } = {}) {
     const file = dir ? path.join(dir, 'stats.json') : null;
     // Days roll over at midnight in this timezone (an invalid one falls back to UTC instead of stopping the addon)
     let tz = String(timezone || 'UTC').trim() || 'UTC';
@@ -465,6 +555,74 @@ function createStats({ dir, now = () => new Date(), logger = console, geo = lazy
         }
         p.rssMax = Math.max(p.rssMax, process.memoryUsage().rss);
         dirty = true;
+        sampleHost();
+    }
+
+    // Whole machine and container: a handful of tiny file reads per sample
+    const hostReader = host || createHostReader({ volumes });
+    let hostPrev = null; // previous reading, for the figures that are counters (CPU time, throttling)
+    let latest = null; // the newest reading, shown as "right now"
+    let cache = null; // { bytes, files }: size of the image cache folder
+    const history = []; // [time, cpu % busy | null, memory % used | null, disk % used | null], newest last
+    function sampleHost() {
+        let r;
+        try { r = hostReader.read(); } catch (err) { logger.warn?.('Host sample failed:', err.message); return; }
+        const h = currentDay().host;
+        const shares = cpuShares(hostPrev?.cpuTimes, r.cpuTimes);
+        if (shares) {
+            h.cpuSamples += 1;
+            h.busySum += shares.busy; h.busyMax = Math.max(h.busyMax, shares.busy);
+            h.ioSum += shares.iowait; h.ioMax = Math.max(h.ioMax, shares.iowait);
+            h.stealSum += shares.steal; h.stealMax = Math.max(h.stealMax, shares.steal);
+        }
+        if (r.load) {
+            h.loadSamples += 1;
+            h.loadSum += r.load.one;
+            h.loadMax = Math.max(h.loadMax, r.load.one);
+        }
+        if (r.mem) {
+            const pct = (r.mem.available / r.mem.total) * 100;
+            h.memSamples += 1;
+            h.availPctSum += pct;
+            h.availPctMin = Math.min(h.availPctMin, pct);
+            if (pct < LOW_MEM_PCT) h.lowMem += 1;
+            h.memTotal = r.mem.total;
+            h.swapTotal = r.mem.swapTotal;
+            h.swapUsedMax = Math.max(h.swapUsedMax, r.mem.swapTotal - r.mem.swapFree);
+        }
+        const cg = r.cgroup || {};
+        if (cg.cpuLimit) h.cpuLimit = cg.cpuLimit;
+        const prevT = hostPrev?.cgroup?.throttle;
+        if (cg.throttle && prevT) {
+            const dp = cg.throttle.periods - prevT.periods;
+            const dt = cg.throttle.throttled - prevT.throttled;
+            const du = cg.throttle.throttledUs - prevT.throttledUs;
+            if (dp >= 0 && dt >= 0 && du >= 0) { h.periods += dp; h.throttled += Math.min(dt, dp); h.throttledUs += du; }
+        }
+        if (cg.memory) {
+            h.ctrUsedMax = Math.max(h.ctrUsedMax, cg.memory.used);
+            if (cg.memory.limit) {
+                h.ctrLimit = cg.memory.limit;
+                h.ctrPctMax = Math.max(h.ctrPctMax, (cg.memory.used / cg.memory.limit) * 100);
+            }
+        }
+        for (const d of r.disks || []) {
+            const e = (h.disk[d.label] ||= { total: d.total, pctMax: 0 });
+            e.total = d.total;
+            e.pctMax = Math.max(e.pctMax, d.pct);
+        }
+        if (cache) { h.cacheMax = Math.max(h.cacheMax, cache.bytes); h.cacheFiles = cache.files; }
+        hostPrev = r;
+        latest = { at: Date.now(), cpu: shares, ...r };
+        const worstDisk = (r.disks || []).reduce((a, d) => (!a || d.pct > a.pct ? d : a), null);
+        history.push([latest.at, shares ? shares.busy : null, r.mem ? 100 - (r.mem.available / r.mem.total) * 100 : null, worstDisk ? worstDisk.pct : null]);
+        if (history.length > HISTORY_MAX) history.shift();
+        dirty = true;
+    }
+    async function measureCache() {
+        if (!cacheDir) return;
+        cache = await measureDir(cacheDir);
+        if (latest) currentDay().host.cacheMax = Math.max(currentDay().host.cacheMax, cache.bytes);
     }
 
     /** Express middleware: records once the response has finished. */
@@ -646,6 +804,92 @@ function createStats({ dir, now = () => new Date(), logger = console, geo = lazy
             return Object.values(merged).sort((a, b) => b.count - a.count || (b.last > a.last ? 1 : -1)).slice(0, 20);
         }
 
+        /** Whole machine and container, merged over the selected range, plus the latest reading as "right now". */
+        function server() {
+            const m = newHost();
+            const disk = {};
+            for (const d of present) {
+                const h = d.host;
+                if (!h) continue;
+                for (const k of ['starts', 'cpuSamples', 'busySum', 'ioSum', 'stealSum', 'loadSamples', 'loadSum', 'memSamples', 'availPctSum', 'lowMem', 'periods', 'throttled', 'throttledUs']) m[k] += h[k] || 0;
+                for (const k of ['busyMax', 'ioMax', 'stealMax', 'loadMax', 'swapUsedMax', 'ctrUsedMax', 'ctrPctMax', 'cacheMax']) m[k] = Math.max(m[k], h[k] || 0);
+                if (h.memSamples) m.availPctMin = Math.min(m.availPctMin, h.availPctMin);
+                for (const k of ['memTotal', 'swapTotal', 'cpuLimit', 'ctrLimit', 'cacheFiles']) if (h[k]) m[k] = h[k]; // newest day wins
+                for (const [label, v] of Object.entries(h.disk || {})) {
+                    const e = (disk[label] ||= { total: v.total, pctMax: 0 });
+                    e.total = v.total;
+                    e.pctMax = Math.max(e.pctMax, v.pctMax);
+                }
+            }
+
+            const cores = os.cpus().length || 1;
+            const proc = newProc();
+            for (const d of present) if (d.proc) { proc.samples += d.proc.samples; proc.cpuSum += d.proc.cpuSum; }
+            const liveDisks = (latest?.disks || []).map((d) => ({ label: d.label, total: d.total, used: d.used, free: d.free, pct: d.pct, pctMax: Math.max(d.pct, disk[d.label]?.pctMax || 0) }));
+            const known = new Set(liveDisks.map((d) => d.label));
+            const disks = [...liveDisks, ...Object.entries(disk).filter(([label]) => !known.has(label)).map(([label, v]) => ({ label, total: v.total, used: null, free: null, pct: v.pctMax, pctMax: v.pctMax }))];
+
+            const avg = (sum, n) => (n ? sum / n : 0);
+            const now = latest && {
+                at: new Date(latest.at).toISOString(),
+                cpu: latest.cpu, load: latest.load,
+                mem: latest.mem, container: latest.cgroup?.memory || null,
+            };
+            const uptimeNow = latest?.uptime != null ? latest.uptime + (Date.now() - latest.at) / 1000 : null;
+            // The three boxes at the top of the System view: how things are right now, plus the last hour for the sparklines
+            const worst = (latest?.disks || []).reduce((a, d) => (!a || d.pct > a.pct ? d : a), null);
+            const live = latest && {
+                at: latest.at,
+                windowMin: Math.round((HISTORY_MAX * SAMPLE_MS) / 60_000),
+                points: history.slice(),
+                cores,
+                arch: { arm64: 'ARM64', x64: 'x86-64', ia32: 'x86', arm: 'ARM' }[os.arch()] || os.arch(),
+                cpu: latest.cpu ? { used: latest.cpu.busy, idle: 100 - latest.cpu.busy } : null,
+                load: latest.load || null,
+                memory: latest.mem ? { total: latest.mem.total, available: latest.mem.available, usedPct: 100 - (latest.mem.available / latest.mem.total) * 100 } : null,
+                disk: worst ? { label: worst.label, total: worst.total, free: worst.free, used: worst.used, usedPct: worst.pct } : null,
+            };
+            const result = {
+                live,
+                available: Boolean(m.cpuSamples || m.memSamples || m.loadSamples || latest?.cpuTimes || latest?.mem),
+                samples: Math.max(m.cpuSamples, m.memSamples),
+                cores,
+                cpuLimit: m.cpuLimit || null,
+                cpu: {
+                    samples: m.cpuSamples,
+                    busyAvg: avg(m.busySum, m.cpuSamples), busyMax: m.busyMax,
+                    iowaitAvg: avg(m.ioSum, m.cpuSamples), iowaitMax: m.ioMax,
+                    stealAvg: avg(m.stealSum, m.cpuSamples), stealMax: m.stealMax,
+                    // this addon's own average, so the page can show how much of the busy time is ours
+                    addonAvg: proc.samples ? proc.cpuSum / proc.samples / cores : 0,
+                },
+                load: { samples: m.loadSamples, avg1: avg(m.loadSum, m.loadSamples), max1: m.loadMax, now: latest?.load || null },
+                throttle: m.periods > 0 ? {
+                    periods: m.periods, throttled: m.throttled,
+                    pct: (m.throttled / m.periods) * 100,
+                    heldBackSec: m.throttledUs / 1e6,
+                } : null,
+                memory: {
+                    samples: m.memSamples,
+                    total: m.memTotal, availPctMin: m.memSamples ? m.availPctMin : null,
+                    availPctAvg: avg(m.availPctSum, m.memSamples),
+                    lowShare: m.memSamples ? m.lowMem / m.memSamples : 0,
+                    swapTotal: m.swapTotal, swapUsedMax: m.swapUsedMax,
+                    container: { usedMax: m.ctrUsedMax, limit: m.ctrLimit || null, pctMax: m.ctrPctMax },
+                },
+                disks,
+                cache: { bytes: cache?.bytes ?? null, files: cache?.files ?? m.cacheFiles, max: m.cacheMax, budget: typeof cacheBudget === 'function' ? cacheBudget() : cacheBudget || null },
+                uptime: {
+                    machine: uptimeNow,
+                    process: process.uptime(),
+                    startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+                    restarts: m.starts,
+                },
+                now,
+            };
+            return { ...result, hints: serverHints(result) };
+        }
+
         const options = OPTION_ORDER
             .map((label, i) => ({ label, values: ranked(optionCounts[i], 50) }))
             .filter((o) => o.values.length);
@@ -670,6 +914,7 @@ function createStats({ dir, now = () => new Date(), logger = console, geo = lazy
             routes: ranked(routes, 10),
             setups: { total: withSetup, presets: ranked(presets, 10), options },
             performance: performance(),
+            server: server(),
             userAgents: userAgents(),
             userAgentDays: Math.min(span, RETENTION_DAYS),
             timing: { ...timing, avgMs: timing.count ? timing.totalMs / timing.count : 0 },
@@ -709,9 +954,20 @@ function createStats({ dir, now = () => new Date(), logger = console, geo = lazy
         timer.unref();
     }
     let sampler = null;
+    let cacheTimer = null;
+    let cacheFirst = null;
     if (sampleProcess) {
+        currentDay().host.starts += 1; // this process is a (re)start
+        dirty = true;
+        sampleHost(); // a first reading right away, so "right now" is filled in before the first interval
         sampler = setInterval(sample, SAMPLE_MS);
         sampler.unref();
+        if (cacheDir) {
+            cacheFirst = setTimeout(() => measureCache().catch(() => {}), 3000);
+            cacheTimer = setInterval(() => measureCache().catch(() => {}), CACHE_MEASURE_MS);
+            cacheFirst.unref();
+            cacheTimer.unref();
+        }
     }
 
     return {
@@ -720,10 +976,12 @@ function createStats({ dir, now = () => new Date(), logger = console, geo = lazy
         stop() {
             if (timer) clearInterval(timer);
             if (sampler) clearInterval(sampler);
+            if (cacheTimer) clearInterval(cacheTimer);
+            if (cacheFirst) clearTimeout(cacheFirst);
             lagHistogram?.disable();
             writeFile(true);
         },
     };
 }
 
-module.exports = { createStats, normalizeIp, classifyRoute, classifyAgent, describeSetup, configSegment, RETENTION_DAYS };
+module.exports = { createStats, serverHints, normalizeIp, classifyRoute, classifyAgent, describeSetup, configSegment, RETENTION_DAYS };

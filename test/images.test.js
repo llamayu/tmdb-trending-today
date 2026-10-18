@@ -7,7 +7,7 @@ const path = require('path');
 const sharp = require('sharp');
 
 const { ImageStore } = require('../src/imageStore');
-const { createArtwork, LAYOUTS, buildTagComposites } = require('../src/artwork');
+const { createArtwork, LAYOUTS, buildTagComposites, reflectColour } = require('../src/artwork');
 const { createTmdbClient } = require('../src/tmdb');
 const { createApp } = require('../src/app');
 const { express, addonBuilder } = require('./helpers/miniExpress');
@@ -208,6 +208,58 @@ test('artwork: poster and background tags have a subtle rounded top-edge highlig
 
         assert.ok(sample(y) > sample(y + 5) + 30, `${width}x${height} tag top border should be brighter than the fill`);
     }
+});
+
+test('artwork: reflectColour keeps the hue of the artwork and never goes dim', () => {
+    const [r, g, b] = reflectColour([200, 30, 30]); // a red band reflects red
+    assert.ok(r > g + 120 && r > b + 120, `expected a clearly red edge, got ${r},${g},${b}`);
+    const [mr, mg, mb] = reflectColour([120, 100, 90]); // a muddy brown average still reads as a warm tone, not white
+    assert.ok(mr > mb + 40, `expected a warm tone, got ${mr},${mg},${mb}`);
+    const dark = reflectColour([4, 4, 4]); // a black band still gives a visible light edge
+    assert.ok(Math.min(...dark) >= 190, `expected a light grey, got ${dark}`);
+    const dim = reflectColour([60, 5, 5]); // a dark red is lifted but stays reddish
+    assert.ok(Math.max(...dim) >= 190 && dim[0] > dim[2] + 20, `expected light red, got ${dim}`);
+    assert.deepEqual(reflectColour([255, 255, 255]), [255, 255, 255]);
+});
+
+test('artwork: the tag edge reflects the colour of the artwork just above it', async () => {
+    const width = 500, height = 750;
+    const { heightRatio, fontRatio } = LAYOUTS.poster.tag;
+    const topEdgeY = 682;
+    const render = async (bandColour) => {
+        const image = await sharp({ create: { width, height, channels: 3, background: '#202020' } })
+            .composite([{ input: await sharp({ create: { width, height: 82, channels: 3, background: bandColour } }).png().toBuffer(), top: 600, left: 0 }])
+            .png().toBuffer();
+        const composites = await buildTagComposites(image, { width, height }, 'Now Streaming', heightRatio, fontRatio);
+        const { data, info } = await sharp(image).composite(composites).raw().toBuffer({ resolveWithObject: true });
+        const o = (topEdgeY * info.width + Math.floor(width / 2)) * info.channels;
+        return [data[o], data[o + 1], data[o + 2]];
+    };
+    const [r1, g1, b1] = await render('#c01818');
+    assert.ok(r1 > g1 + 25 && r1 > b1 + 25, `red poster should give a reddish edge, got ${r1},${g1},${b1}`);
+    const [r2, g2, b2] = await render('#1858c0');
+    assert.ok(b2 > r2 + 25 && b2 > g2 + 10, `blue poster should give a bluish edge, got ${r2},${g2},${b2}`);
+});
+
+test('artwork: the tag edge can reflect what is drawn above the tag, not just the bare artwork', async () => {
+    const width = 500, height = 750;
+    const { heightRatio, fontRatio } = LAYOUTS.poster.tag;
+    const grey = await sharp({ create: { width, height, channels: 3, background: '#202020' } }).png().toBuffer();
+    // the same poster after a coloured title has been drawn just above the tag
+    const withTitle = await sharp(grey)
+        .composite([{ input: await sharp({ create: { width, height: 82, channels: 3, background: '#c01818' } }).png().toBuffer(), top: 600, left: 0 }])
+        .raw().toBuffer({ resolveWithObject: true });
+    const reflectionSource = { buffer: withTitle.data, raw: { width, height, channels: withTitle.info.channels } };
+    const edgeAt = async (source) => {
+        const composites = await buildTagComposites(grey, { width, height }, 'Now Streaming', heightRatio, fontRatio, source);
+        const { data, info } = await sharp(grey).composite(composites).raw().toBuffer({ resolveWithObject: true });
+        const o = (682 * info.width + Math.floor(width / 2)) * info.channels;
+        return [data[o], data[o + 1], data[o + 2]];
+    };
+    const [r, g, b] = await edgeAt(reflectionSource);
+    assert.ok(r > g + 25 && r > b + 25, `edge should pick up the title colour, got ${r},${g},${b}`);
+    const [r0, g0, b0] = await edgeAt(null); // without it, the bare grey poster gives a neutral edge
+    assert.ok(Math.abs(r0 - b0) < 15, `bare artwork should give a neutral edge, got ${r0},${g0},${b0}`);
 });
 
 test('artwork: landscape rank font is 30% of backdrop height', () => {

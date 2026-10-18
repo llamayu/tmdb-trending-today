@@ -25,7 +25,13 @@ function createApp(env, deps = {}) {
 
     // Admin dashboard: only exists when STATS_TOKEN is set
     const stats = deps.stats || (env.statsToken
-        ? createStats({ dir: env.statsDir, logger, renderConcurrency: env.renderConcurrency, timezone: env.statsTimezone, ...(env.statsGeo === false ? { geo: () => null } : {}) })
+        ? createStats({
+            dir: env.statsDir, logger, renderConcurrency: env.renderConcurrency, timezone: env.statsTimezone,
+            // The Server section: disk behind the two mounted folders, and the image cache's size against its budget
+            volumes: [{ key: 'data', label: 'Data folder', path: env.statsDir }, { key: 'cache', label: 'Image cache', path: env.cacheDir }],
+            cacheDir: env.cacheDir, cacheBudget: () => store.maxDiskBytes,
+            ...(env.statsGeo === false ? { geo: () => null } : {}),
+        })
         : null);
     const metrics = stats ? stats.metrics : NOOP_METRICS;
 

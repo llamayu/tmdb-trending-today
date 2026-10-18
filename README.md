@@ -38,7 +38,7 @@ so there is no database and no accounts. One server can host as many different s
 - **AIOMetadata support**: ready-made URL patterns so the same artwork can be used as an AIOMetadata art override.
 - **Fast and frugal**: images are cached in memory and on disk, concurrent requests for the same image share one render,
   and titles that need nothing drawn are simply redirected to TMDB.
-- **Optional admin dashboard** with usage statistics, performance numbers, error details and a per-title cache reset.
+- **Optional admin dashboard** with usage statistics, performance numbers, server health (CPU, CPU-limit throttling, memory, disk, uptime), error details and a per-title cache reset.
 
 ## Quick start
 
@@ -231,6 +231,11 @@ These details are tuned to look right across very different artwork, so change t
 
 - **Tag pill**: a liquid-glass tab along the bottom edge, sitting on a blurred copy of the artwork, with a light edge that
   is brightest in the centre and fades down the sides.
+- **Tag edge color**: the edge is not plain white. The strip of artwork **10% of the image height above the tag**, as wide
+  as the tag, is averaged in five slices from left to right. It is read from the poster **with the title logo (or text title)
+  already drawn on it**, since the title sits just above the tag; the tag's tint and text color still come from the bare artwork. Each slice gets its saturation boosted (averages are muddy), is lifted
+  slightly toward white and brought up to a minimum brightness (`reflectColour` in `src/artwork.js`), so the edge looks like it reflects the poster and can shift hue across
+  the tag. If the strip can't be read, the edge is white as before.
 - **Tag color**: the average color of the **bottom half** of the image is measured. A bright area (perceived
   luminance above 140) gets dark text on a light tint; otherwise white text on a deep tint. The whole bottom half is
   sampled rather than just the pill's footprint, because a solid black strip would otherwise produce an invisible black
@@ -283,14 +288,38 @@ rate limited.
 
 ### What it shows
 
-A time range selector (Today, 7d, 14d, 30d, 90d, All time) drives every figure on the page.
+A time range selector (Today, 7d, 14d, 30d, 90d, All time) drives every figure on the page. Next to the Refresh button, a
+**Dashboard / System** switch flips between the usage view and the server view. The System view starts with three live boxes
+(CPU, Memory, Disk) showing how things are right now, each with a ring gauge, free space or idle share, and a sparkline of
+the last hour; it refreshes every 15 seconds.
 
 - **Users, manifest loads, configure-page visits, requests, server errors**, and a daily chart.
 - **Performance**: cache hit rate, fresh renders, average render time, how much of that time is waiting on TMDB versus
   local work, concurrency, CPU, event-loop stalls and memory, with plain-language hints about the likely bottleneck.
+- **System view**: the health of the machine the addon runs on, with plain-language hints such as "CPU was throttled 12% of
+  the time, consider raising the limit", "disk over 85% full" or "memory has been under 10% free". See [System view details](#system-view-details).
 - **Server errors**: what the 5xx responses actually were, how often, and when.
 - **People**: countries, clients (grouped into Nuvio, AIOStreams, AIOMetadata, Odin, browsers and so on), the raw user agents,
   and which presets and settings people use.
+
+### System view details
+
+Below the three live boxes, the view has a full-width CPU card and then CPU limit, Memory, Disk and Uptime in two rows of two, and each card shows the hints that
+belong to it. Hovering a sparkline shows the exact value and time of that point.
+
+Sampled every 15 seconds from files Linux exposes to the container, so it costs a few tiny file reads and no extra
+dependencies. It uses the same time range as the rest of the page, and each figure shows the average and the peak.
+
+| Figure | Where it comes from | What it tells you |
+|---|---|---|
+| Machine CPU, I/O wait, hypervisor steal, load average | `/proc/stat`, `/proc/loadavg` | Whole-VM CPU use (your other addons included), time spent waiting on the disk, and how much the hypervisor takes from your VM. A bar shows how much of the machine's CPU is this addon |
+| Throttled | the container's cgroup `cpu.stat` and `cpu.max` | How often the `cpus: 3` cap held the container back, and for how long. This is the number that says whether the cap is slowing renders down |
+| Memory | `/proc/meminfo`, cgroup memory files | Available RAM and swap for the whole VM, plus this container's own use against its limit (if you set one) |
+| Disk | free and total space of `./data` and `./image-cache` | The real VPS disk, because they are bind mounts. Folders on the same disk are shown as one. The image cache folder's size is measured every 10 minutes |
+| Uptime | `/proc/uptime`, the Node process | How long the VPS and the addon have been up, and how many times the addon started in the range |
+
+Both cgroup v2 and v1 hosts are supported. Anything a machine does not expose is simply left out; on a Mac or Windows
+dev machine the section says the figures need Linux. The restart count starts from the version that added this section.
 
 ### Refresh an item
 
@@ -352,7 +381,8 @@ Set `ADDON_URL` to the public HTTPS address, without a trailing path.
 
 Rendering is the expensive part. The defaults suit a small VPS. To protect other services on the same machine, keep
 `RENDER_CONCURRENCY` close to your core count and keep the `cpus` limit and log rotation from the compose file. The
-dashboard's Performance section shows whether rendering, TMDB or the queue is the limit.
+dashboard's Performance section shows whether rendering, TMDB or the queue is the limit, and its Server section shows
+whether the `cpus` cap, memory or disk is.
 
 ### Operations
 
