@@ -478,6 +478,8 @@ function renderGauges(s) {
 // memory in binary units (GiB/MiB, like the gauge and docker stats); disks in decimal GB (like the gauge and your VPS provider)
 const fmtSize = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(b >= 10737418240 ? 0 : 1) + ' GiB' : Math.round(b / 1048576).toLocaleString() + ' MiB');
 const fmtDisk = (b) => (b >= 1e12 ? (b / 1e12).toFixed(1) + ' TB' : Math.round(b / 1e9).toLocaleString() + ' GB');
+// for small sizes such as the image cache (capped near 1 GB): MB below 1 GB, one decimal of GB above it
+const fmtSmall = (b) => (b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.round(b / 1e6).toLocaleString() + ' MB');
 const pctText = (x) => (x > 0 && x < 1 ? '<1%' : Math.round(x) + '%');
 function fmtDur(sec) {
   if (sec === null || sec === undefined) return '–';
@@ -552,7 +554,7 @@ function renderServer(s) {
   }
   const ca = s.cache;
   $('srvCache').replaceChildren(
-    tile('Image cache folder', ca.bytes === null ? '–' : fmtDisk(ca.bytes), ca.bytes === null ? 'measured shortly after start, then every 10 minutes' : fmt(ca.files) + ' files' + (ca.budget ? ' \u00b7 trimmed at ' + fmtDisk(ca.budget) : '') + (ca.max > ca.bytes ? ' \u00b7 peak ' + fmtDisk(ca.max) : '')),
+    tile('Image cache folder', ca.bytes === null ? '–' : fmtSmall(ca.bytes), ca.bytes === null ? 'measured shortly after start, then every 10 minutes' : fmt(ca.files) + ' files' + (ca.budget ? ' \u00b7 trimmed at ' + fmtSmall(ca.budget) : '') + (ca.max > ca.bytes ? ' \u00b7 peak ' + fmtSmall(ca.max) : '')),
   );
 
   const u = s.uptime;

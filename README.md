@@ -229,8 +229,12 @@ portrait poster falls back to a centred crop of a textless background when no te
 
 These details are tuned to look right across very different artwork, so change them with care:
 
-- **Tag pill**: a liquid-glass tab along the bottom edge, sitting on a blurred copy of the artwork, with a light edge that
-  is brightest in the centre and fades down the sides.
+- **Tag pill**: a liquid-glass tab along the bottom edge, with a light edge that is brightest in the centre and fades down the
+  sides. Inside, the artwork is **refracted** rather than only blurred (`src/glass.js`): within one corner-radius of the top
+  and side edges, pixels are taken from further out, past the edge, so the rim shows a squeezed copy of what lies just beyond
+  the tag, with a faint colour fringe (red, green and blue bend slightly differently). The middle stays frosted as before, and
+  the rim keeps a lightly blurred copy so the bend stays visible. It costs a few milliseconds per tagged image, and falls back
+  to the plain blur if anything goes wrong.
 - **Tag edge color**: the edge is not plain white. The strip of artwork **10% of the image height above the tag**, as wide
   as the tag, is averaged in five slices from left to right. It is read from the poster **with the title logo (or text title)
   already drawn on it**, since the title sits just above the tag; the tag's tint and text color still come from the bare artwork. Each slice gets its saturation boosted (averages are muddy), is lifted
@@ -320,6 +324,24 @@ dependencies. It uses the same time range as the rest of the page, and each figu
 
 Both cgroup v2 and v1 hosts are supported. Anything a machine does not expose is simply left out; on a Mac or Windows
 dev machine the section says the figures need Linux. The restart count starts from the version that added this section.
+
+### Merging two stats files
+
+If stats were reset and you ended up with two `stats.json` files (one from before, one from after), combine them with:
+
+```bash
+docker compose stop
+cp data/stats.json data/stats.json.bak
+node scripts/merge-stats.js older.json newer.json data/stats.json.merged
+mv data/stats.json.merged data/stats.json
+docker compose start
+```
+
+It never changes the two input files and refuses to overwrite an existing file (add `--force` to allow it). A day that appears in
+both files, such as the day of the reset, is added together; every other day is copied as is. The limit is that visitors are stored
+as hashes made with a secret salt unique to each file, so a person seen in both files counts twice in ranges that span both. The
+older file's salt is kept by default (`--salt newer` keeps the other one). No Node on the host? Run it with
+`docker run --rm -v "$PWD":/w -w /w node:20-alpine node scripts/merge-stats.js older.json newer.json merged.json`.
 
 ### Refresh an item
 

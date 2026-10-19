@@ -262,6 +262,22 @@ test('artwork: the tag edge can reflect what is drawn above the tag, not just th
     assert.ok(Math.abs(r0 - b0) < 15, `bare artwork should give a neutral edge, got ${r0},${g0},${b0}`);
 });
 
+test('artwork: the tag interior bends the artwork near its rim like glass, instead of only blurring it', async () => {
+    const width = 500, height = 750;
+    const { heightRatio, fontRatio } = LAYOUTS.poster.tag;
+    // grey poster with a red band right above where the tag goes
+    const image = await sharp({ create: { width, height, channels: 3, background: '#202020' } })
+        .composite([{ input: await sharp({ create: { width, height: 82, channels: 3, background: '#c01818' } }).png().toBuffer(), top: 600, left: 0 }])
+        .png().toBuffer();
+    const composites = await buildTagComposites(image, { width, height }, 'Now Streaming', heightRatio, fontRatio);
+    const { data, info } = await sharp(image).composite(composites).raw().toBuffer({ resolveWithObject: true });
+    const at = (x, y) => { const o = (y * info.width + x) * info.channels; return [data[o], data[o + 1], data[o + 2]]; };
+    const [rr, , rb] = at(Math.floor(width / 2), 687); // a few pixels inside the top edge: bent in from the red above
+    assert.ok(rr > rb + 20, `rim should show the red above the tag, got r=${rr} b=${rb}`);
+    const [mr, , mb] = at(Math.floor(width / 2), 725); // the middle is plain frosted grey
+    assert.ok(Math.abs(mr - mb) < 15, `middle should stay neutral, got r=${mr} b=${mb}`);
+});
+
 test('artwork: landscape rank font is 30% of backdrop height', () => {
     assert.equal(LAYOUTS.backdrop.rank(1280, 720).fontSize, 216);
 });

@@ -1,5 +1,6 @@
 'use strict';
 const sharp = require('sharp');
+const { glassRegion } = require('./glass');
 const { createLimiter } = require('./util');
 const { tagLabel } = require('./tags');
 const { resolveProviderLogoInfo, hasNetworkProviderMapping } = require('./providers');
@@ -331,7 +332,12 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
     const bandTop = Math.max(0, startY - Math.round(height * REFLECT_LOOKUP));
     const [colorInfo, blurBuffer, reflection] = await Promise.all([
         sampleBottomHalf(imageBuffer, metadata),
-        blurRegion(imageBuffer, { left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight }),
+        // The tag's interior: artwork bent near the rim like thick glass and frosted in the middle; the plain blur if that fails
+        (async () => {
+            const region = { left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight };
+            const glass = await glassRegion(reflectionSource || imageBuffer, width, height, region, { startX, startY, width: tagWidth, radius: r });
+            return glass || blurRegion(imageBuffer, region);
+        })(),
         sampleReflection(reflectionSource?.buffer || imageBuffer, { left: extractLeft, top: bandTop, width: extractWidth, height: Math.max(0, extractTop - bandTop) }, REFLECT_SEGMENTS, reflectionSource?.raw || null),
     ]);
 
