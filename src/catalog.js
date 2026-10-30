@@ -37,10 +37,11 @@ function languageName(code) {
 }
 
 /** URL of a generated poster/backdrop; the parameter order is part of the public URL format. */
-function artUrl(addonUrl, kind, tmdbId, { type, tag, rank, lang, logos, textless = false }, ext = 'jpg') {
+function artUrl(addonUrl, kind, tmdbId, { type, tag, rank, lang, logos, textless = false, tagTone }, ext = 'jpg') {
     const q = new URLSearchParams({ type, tag, rank: String(rank), lang, logos: logos ? '1' : '0' });
     if (textless) q.set('textless', '1');
     if (kind === 'backdrop' || textless) q.set('titleStyle', 'gradient-v9');
+    if (tagTone === 'tinted' && tag !== 'none') q.set('tagTone', 'tinted'); // glass is the default and stays out of the URL
     return `${addonUrl}/${kind}/${tmdbId}.${ext}?${q}`;
 }
 
@@ -91,6 +92,7 @@ function createCatalog({ tmdb, trending, tags, genres, addonUrl, imageExt = 'jpg
                 lang: cfg.posterLanguage,
                 logos: cfg.posterLogos,
                 textless: cfg.textlessArtwork,
+                tagTone: cfg.posterTagTone,
             };
             let portraitPoster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : null;
             if (cfg.textlessArtwork || cfg.posterRanked || cfg.posterTags || cfg.posterLogos || cfg.posterLanguage !== 'en') {
@@ -105,6 +107,7 @@ function createCatalog({ tmdb, trending, tags, genres, addonUrl, imageExt = 'jpg
                 lang: cfg.backdropLanguage,
                 logos: cfg.backdropLogos,
                 textless: cfg.backdropTextlessArtwork,
+                tagTone: cfg.backdropTagTone,
             }, imageExt);
             const landscape = cfg.posterShape === 'landscape';
 

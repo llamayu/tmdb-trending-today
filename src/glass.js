@@ -18,7 +18,7 @@ const BEND = 0.9; // how far the very edge reaches out, as a share of the rim wi
 const DISPERSION = [1.12, 1, 0.88]; // red bends a little more than green, blue a little less
 const RIM_REACH = 1.5; // the sharper rim fades out by this many rim widths
 const RIM_STRENGTH = 0.85; // how much of the rim is the lightly blurred copy rather than the frosted one
-const FROST_BLUR = 10; // the frosted middle (the original flat tag used 15; the glass rim now carries more of the look, so the middle can show more)
+const FROST_BLUR = 7; // the frosted middle (the original flat tag used 15; the glass rim now carries more of the look, so the middle can show more)
 const RIM_BLUR = 1.2;
 
 const smoothstep = (t) => { const x = Math.max(0, Math.min(1, t)); return x * x * (3 - 2 * x); };

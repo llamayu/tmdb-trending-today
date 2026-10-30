@@ -193,13 +193,18 @@ const setChk = (id, keys, on) => { const v = cfg(...keys); if (v !== undefined) 
 
 // ── build the repetitive controls ──
 const LANGS = [['en', 'English'], ['ja', 'Japanese'], ['ko', 'Korean'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['hi', 'Hindi']];
-const OVERLAYS = [['Tags', 'Tags', 1, 0], ['Ranked', 'Ranked', 1, 0], ['Streaming logos', 'Logos', 0, 0]]; // label, key, poster default, backdrop default
+const OVERLAYS = [['Ranked', 'Ranked', 1, 0], ['Streaming logos', 'Logos', 0, 0]]; // label, key, poster default, backdrop default (Tags has its own row below)
 const sw = (id, on, label) => '<label class="sw"><input type="checkbox" role="switch" aria-label="' + label + '" id="' + id + '"' + (on ? ' checked' : '') + '><i></i></label>';
+// Tags: Glass (true to the artwork), Tinted (the original, deeper tint), or Off. The checkbox just mirrors "not off" for the rest of the page.
+const tagsRow = (k, mode) => '<div class="row" data-kind="' + k + '"><span>Tags</span>' +
+    '<div class="seg" data-target="' + k + 'TagsMode" data-act="updateLink" data-label="' + (k === 'poster' ? 'Poster' : 'Background') + ' tags"><i></i><button type="button" data-v="glass">Glass</button><button type="button" data-v="tinted">Tinted</button><button type="button" data-v="off">Off</button></div>' +
+    '<input type="hidden" id="' + k + 'TagsMode" value="' + mode + '"><input type="checkbox" id="' + k + 'Tags" hidden' + (mode !== 'off' ? ' checked' : '') + '></div>';
 const sel = id => '<select id="' + id + '" aria-label="' + id + '">' + LANGS.concat([['null', 'Textless']]).map(l => '<option value="' + l[0] + '">' + l[1] + '</option>').join('') + '</select>';
 $('rows').innerHTML = ['poster', 'backdrop'].map((k, n) =>
     (k === 'poster' ? '<div class="row" data-kind="poster"><span>Style</span>' +
         '<div class="seg" data-target="posterShape" data-act="updateLink" data-label="Poster style"><i></i><button type="button" data-v="portrait">Portrait</button><button type="button" data-v="landscape">Landscape</button></div>' +
         '<input type="hidden" id="posterShape" value="landscape"></div>' : '') +
+    tagsRow(k, n === 0 ? 'glass' : 'off') +
     OVERLAYS.map(o => '<div class="row" data-kind="' + k + '"><span>' + o[0] + '</span>' + sw(k + o[1], o[2 + n], o[0]) + '</div>').join('') +
     '<div class="row" data-kind="' + k + '"><span>Language<small>Falls back to the title\'s original language</small></span>' + sel(k + 'Language') + '</div>' +
     '<div class="row" data-kind="' + k + '"><span><span class="setting-title">Curated<span class="beta-tag">BETA</span></span><small>Meticulously rendered. No clutter.</small></span>' +
@@ -212,8 +217,10 @@ $('backdropLanguage').value = 'null'; // default: clean, textless backdrop
 
 function initializeConfigControls() {
     const notFalse = v => v !== 'false', isTrue = v => v === 'true';
-    setChk('posterTags', ['posterTags', 'portraitTags', 'tags'], notFalse);
-    setChk('backdropTags', ['backdropTags', 'landscapeTags', 'tags'], notFalse);
+    for (const [k, keys] of [['poster', ['posterTags', 'portraitTags', 'tags']], ['backdrop', ['backdropTags', 'landscapeTags', 'tags']]]) {
+        const v = cfg(...keys);
+        if (v !== undefined) $(k + 'TagsMode').value = notFalse(v) ? (cfg(k + 'TagTone') === 'tinted' ? 'tinted' : 'glass') : 'off';
+    }
     setChk('posterLogos', ['posterLogos', 'portraitLogos', 'logos'], isTrue);
     setChk('backdropLogos', ['backdropLogos', 'landscapeLogos', 'logos'], isTrue);
     setChk('posterRanked', ['posterRanked', 'portraitRanked', 'ranked'], notFalse);
@@ -239,7 +246,11 @@ const PRESETS = { clean: '000000', ranked: '001000', classic: '101000', everythi
 document.addEventListener('click', e => {
     const chip = e.target.closest('[data-preset]');
     if (!chip) return;
-    PRESETS[chip.dataset.preset].split('').forEach((v, i) => { $(PKEYS[i]).checked = v === '1'; });
+    PRESETS[chip.dataset.preset].split('').forEach((v, i) => {
+        const k = PKEYS[i];
+        if (k.endsWith('Tags')) { const m = $(k + 'Mode'); m.value = v === '1' ? (m.value === 'off' ? 'glass' : m.value) : 'off'; } // keep the selected tint if tags remain enabled
+        else $(k).checked = v === '1';
+    });
     $('backdropLanguage').value = 'null'; // every preset uses a clean textless backdrop
     updateLink();
 });
@@ -331,7 +342,9 @@ function refreshDock() {
     syncSegs();
 }
 
+const tagTone = k => $(k + 'TagsMode').value === 'tinted' ? 'tinted' : 'glass';
 function updateLink() {
+    ['poster', 'backdrop'].forEach(k => { $(k + 'Tags').checked = $(k + 'TagsMode').value !== 'off'; });
     const on = id => $(id).checked;
     const d = on('digitalOnly'), shape = $('posterShape').value;
     const bLang = $('backdropLanguage').value, pLang = $('posterLanguage').value;
@@ -341,15 +354,17 @@ function updateLink() {
         : picked.length <= 2 ? picked.map(o => o.nextElementSibling.textContent.trim()).join(', ')
         : picked.length + ' Languages Selected';
 
-    const c = "backdropTags=" + on('backdropTags') + "|backdropLogos=" + on('backdropLogos') + "|backdropRanked=" + on('backdropRanked') + "|backdropLanguage=" + bLang + "|backdropTextlessArtwork=" + on('backdropTextlessArtwork') +
-        "|posterTags=" + on('posterTags') + "|posterLogos=" + on('posterLogos') + "|posterRanked=" + on('posterRanked') + "|posterLanguage=" + pLang + "|textlessArtwork=" + on('textlessArtwork') +
+    const tone = k => tagTone(k) === 'tinted' ? "|" + k + "TagTone=tinted" : ""; // glass is the default, so it stays out of the link
+    const c = "backdropTags=" + on('backdropTags') + tone('backdrop') + "|backdropLogos=" + on('backdropLogos') + "|backdropRanked=" + on('backdropRanked') + "|backdropLanguage=" + bLang + "|backdropTextlessArtwork=" + on('backdropTextlessArtwork') +
+        "|posterTags=" + on('posterTags') + tone('poster') + "|posterLogos=" + on('posterLogos') + "|posterRanked=" + on('posterRanked') + "|posterLanguage=" + pLang + "|textlessArtwork=" + on('textlessArtwork') +
         "|posterShape=" + shape + "|digitalOnly=" + d + "|listLang=" + l;
     const h = location.host, pr = location.protocol;
 
     // AIOMetadata pattern URLs: only non-default options are added, then the catalog filters
-    const query = (tags, logos, lang, ranked, textless, titleStyle = false) => {
+    const query = (tags, logos, lang, ranked, textless, titleStyle = false, tagToneValue = 'glass') => {
         const p = new URLSearchParams();
         if (!tags) p.set('tag', 'none');
+        else if (tagToneValue === 'tinted') p.set('tagTone', 'tinted');
         if (logos) p.set('logos', '1');
         if (lang !== 'en') p.set('lang', lang);
         if (ranked) p.set('ranked', '1');
@@ -360,12 +375,12 @@ function updateLink() {
         return '?' + p.toString();
     };
     $('manifestUrl').value = pr + "//" + h + "/" + c + "/manifest.json";
-    $('patternUrl').value = pr + "//" + h + "/image/{type}/{tmdb_id}.{{IMAGE_EXT}}" + query(on('posterTags'), on('posterLogos'), pLang, on('posterRanked'), on('textlessArtwork'));
-    $('landscapePatternUrl').value = pr + "//" + h + "/landscape/{type}/{tmdb_id}.{{IMAGE_EXT}}" + query(on('backdropTags'), on('backdropLogos'), bLang, on('backdropRanked'), on('backdropTextlessArtwork'), true);
+    $('patternUrl').value = pr + "//" + h + "/image/{type}/{tmdb_id}.{{IMAGE_EXT}}" + query(on('posterTags'), on('posterLogos'), pLang, on('posterRanked'), on('textlessArtwork'), false, tagTone('poster'));
+    $('landscapePatternUrl').value = pr + "//" + h + "/landscape/{type}/{tmdb_id}.{{IMAGE_EXT}}" + query(on('backdropTags'), on('backdropLogos'), bLang, on('backdropRanked'), on('backdropTextlessArtwork'), true, tagTone('backdrop'));
     $('installBtn').onclick = () => { location.href = "stremio://" + h + "/" + c + "/manifest.json"; };
 
     const curated = $('previewMode').value === 'backdrop' ? on('backdropTextlessArtwork') : on('textlessArtwork');
-    const bits = [on('posterTags') && 'Tags', on('posterRanked') && 'Ranks', on('posterLogos') && 'Logos', curated && 'Curated'].filter(Boolean);
+    const bits = [on('posterTags') && (tagTone('poster') === 'tinted' ? 'Tinted tags' : 'Glass tags'), on('posterRanked') && 'Ranks', on('posterLogos') && 'Logos', curated && 'Curated'].filter(Boolean);
     const langLabel = picked.length > 2 ? picked.length + ' languages' : $('langBtnText').textContent;
     $('summary').textContent = [langLabel, shape === 'portrait' ? 'Portrait' : 'Landscape', bits.length ? bits.join(', ') : 'No overlays'].join(' · ');
 

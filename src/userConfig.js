@@ -14,6 +14,11 @@ const firstTruthy = (cfg, keys) => {
 };
 /** dflt=true: on unless "false". dflt=false: off unless "true". */
 const flag = (value, dflt) => (value === undefined ? dflt : dflt ? value !== 'false' : value === 'true');
+/**
+ * The tag's tint. "glass" is the default and is left out of the result on purpose: the configured manifest id is a hash of these
+ * settings, and adding a key to everyone's would give every existing install a new id.
+ */
+const isTinted = (value) => value === 'tinted';
 const language = (value) => (LANG.test(value || '') ? value : 'en');
 
 function parseListLang(value) {
@@ -28,7 +33,7 @@ function parseListLang(value) {
  */
 function parseUserConfig(cfg = {}) {
     const listLangs = parseListLang(cfg.listLang);
-    return {
+    const parsed = {
         backdropTags: flag(pick(cfg, ['backdropTags', 'landscapeTags', 'tags']), true),
         backdropLogos: flag(pick(cfg, ['backdropLogos', 'landscapeLogos', 'logos']), false),
         backdropRanked: flag(pick(cfg, ['backdropRanked', 'landscapeRanked']), false),
@@ -44,6 +49,10 @@ function parseUserConfig(cfg = {}) {
         listLangs,
         listLang: listLangs.join(','),
     };
+    // Only "tinted" is stored; glass (the default) adds no key at all.
+    if (isTinted(cfg.backdropTagTone)) parsed.backdropTagTone = 'tinted';
+    if (isTinted(cfg.posterTagTone)) parsed.posterTagTone = 'tinted';
+    return parsed;
 }
 
 /** The `<config>` path segment of an install URL -> plain object. Never throws on malformed input. */

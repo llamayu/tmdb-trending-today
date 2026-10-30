@@ -98,6 +98,7 @@ function registerImageRoutes(app, { store, artwork, trending, tags, logger = con
         const query = new URLSearchParams({ type, tag, rank, lang: parseLang(q.lang), logos: q.logos === '1' ? '1' : '0' });
         if (q.textless === '1') query.set('textless', '1');
         if (target === 'backdrop' || q.textless === '1') query.set('titleStyle', 'gradient-v9');
+        if (q.tagTone === 'tinted' && tag !== 'none') query.set('tagTone', 'tinted');
         res.set('Cache-Control', 'public, max-age=300'); // tags change by the day, not the minute
         res.redirect(302, `/${target}/${id}.${format}?${query}`);
     });

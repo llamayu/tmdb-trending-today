@@ -138,24 +138,30 @@ Settings live in the first path segment of the install URL as `key=value` pairs 
 https://addon.example.com/posterTags=true|posterRanked=true|listLang=en/manifest.json
 ```
 
-The configure page writes every setting explicitly. For keys missing from a URL, these defaults apply, and unknown keys
+The configure page writes its settings to the install URL. For keys missing from a URL, these defaults apply, and unknown keys
 or invalid values are ignored:
 
 | Key | Default | Meaning |
 |---|---|---|
 | `posterTags` | `true` | Draw tags on posters |
+| `posterTagTone` | `glass` | Tag tint on posters: `glass` (true to the artwork) or `tinted` (the original deeper tint) |
 | `posterRanked` | `true` | Draw rank numbers on posters |
 | `posterLogos` | `false` | Draw the streaming-service logo on posters |
 | `posterLanguage` | `en` | Preferred artwork language; `null` means textless |
 | `textlessArtwork` | `false` | Curated mode for posters |
 | `posterShape` | `portrait` | `portrait` or `landscape` |
 | `backdropTags` | `true` | Draw tags on backgrounds |
+| `backdropTagTone` | `glass` | Tag tint on backgrounds: `glass` or `tinted` |
 | `backdropRanked` | `false` | Draw rank numbers on backgrounds |
 | `backdropLogos` | `false` | Draw the streaming-service logo on backgrounds |
 | `backdropLanguage` | `en` | Preferred background language; `null` means textless |
 | `backdropTextlessArtwork` | `false` | Curated mode for backgrounds |
 | `listLang` | `en` | Catalog languages: comma-separated ISO codes, `all`, or `non-en` (up to 12) |
 | `digitalOnly` | `true` | Only list movies already released digitally |
+
+On the configure page the Tags row is a three-way switch, **Off / Glass / Tinted**, for posters and backgrounds separately. Off
+is `posterTags=false`; Glass and Tinted are `posterTags=true` with the tone above. Glass is the default and is left out
+of the link; Tinted is written as `posterTagTone=tinted`.
 
 Older URL formats (`landscapeTags`, `portraitPosterLang`, un-prefixed `tags` and so on) are still understood, so installs
 from earlier versions keep working.
@@ -197,6 +203,7 @@ Generated artwork is served from two routes, and the file extension picks the fo
 | `lang` | Language code, or `null` for textless |
 | `logos` | `1` to draw the streaming logo |
 | `textless` | `1` for Curated mode |
+| `tagTone` | `tinted` for the original, deeper tag tint; anything else (or missing) is the default `glass`. Ignored when `tag` is `none` |
 
 Query parameters are validated: a non-numeric id returns `400`, and bad values fall back to defaults instead of reaching
 TMDB or the image.
@@ -237,13 +244,17 @@ These details are tuned to look right across very different artwork, so change t
   to the plain blur if anything goes wrong.
 - **Tag edge color**: the edge is not plain white. The strip of artwork **10% of the image height above the tag**, as wide
   as the tag, is averaged in five slices from left to right. It is read from the poster **with the title logo (or text title)
-  already drawn on it**, since the title sits just above the tag; the tag's tint and text color still come from the bare artwork. Each slice gets its saturation boosted (averages are muddy), is lifted
+  already drawn on it**, since the title sits just above the tag; the tag's tint and text color come from the glass average (see Tag color). Each slice gets its saturation boosted (averages are muddy), is lifted
   slightly toward white and brought up to a minimum brightness (`reflectColour` in `src/artwork.js`), so the edge looks like it reflects the poster and can shift hue across
   the tag. If the strip can't be read, the edge is white as before.
-- **Tag color**: the average color of the **bottom half** of the image is measured. A bright area (perceived
-  luminance above 140) gets dark text on a light tint; otherwise white text on a deep tint. The whole bottom half is
-  sampled rather than just the pill's footprint, because a solid black strip would otherwise produce an invisible black
-  pill on black.
+- **Tag tone**: the Tags setting has two tints. **Tinted** is the original look: the poster's bottom-half average pushed
+  halfway to black (a quarter toward white under dark text) at 70% opacity. **Glass**, the default, is described next.
+- **Tag color** (Glass): the average color of the **glass behind the tag** (the refracted, frosted artwork) is measured. A bright
+  area (perceived luminance above 140) gets dark text, otherwise white text. The tint is that same average color, so the tag
+  stays true to the poster; it is pushed darker (or lighter, under dark text) only as far as needed for the label to reach a
+  contrast ratio of 5 (`tagTint` in `src/artwork.js`), and most posters need no push at all. Near-black artwork is lifted to a
+  minimum brightness so the tag never turns into an invisible black pill on a black poster. The poster's bottom half is only
+  the fallback if the glass can't be measured.
 - **Pill width**: text is drawn in SF Pro Display Bold, but no font engine is available to measure it, so widths come from
   a per-character scoring table (`estimateTextWidth` in `src/artwork.js`): narrow letters and punctuation count 0.25 of the
   font size, standard lowercase 0.5, wide capitals 0.7, `W M w m @` 0.85, plus padding of 1.8× the font size.

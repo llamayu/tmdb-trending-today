@@ -7,7 +7,7 @@ const path = require('path');
 const sharp = require('sharp');
 
 const { ImageStore } = require('../src/imageStore');
-const { createArtwork, LAYOUTS, buildTagComposites, reflectColour } = require('../src/artwork');
+const { createArtwork, LAYOUTS, buildTagComposites, reflectColour, tagTint, darkTint, contrastRatio, relativeLuminance, estimateTextWidth } = require('../src/artwork');
 const { createTmdbClient } = require('../src/tmdb');
 const { createApp } = require('../src/app');
 const { express, addonBuilder } = require('./helpers/miniExpress');
@@ -276,6 +276,57 @@ test('artwork: the tag interior bends the artwork near its rim like glass, inste
     assert.ok(rr > rb + 20, `rim should show the red above the tag, got r=${rr} b=${rb}`);
     const [mr, , mb] = at(Math.floor(width / 2), 725); // the middle is plain frosted grey
     assert.ok(Math.abs(mr - mb) < 15, `middle should stay neutral, got r=${mr} b=${mb}`);
+});
+
+test('artwork: the tag tint is the artwork\u2019s own colour unless the label needs more contrast', () => {
+    // a dark, moody poster: white text is already readable, so no darkening at all
+    const dark = tagTint([100, 80, 90], false);
+    assert.ok(dark.colour.every((v, i) => Math.abs(v - [100, 80, 90][i]) <= 6)); // a touch more colourful, same hue
+    assert.equal(dark.shift, 0);
+    // a mid-tone poster under white text gets only as much darkening as it needs, and it is enough
+    const mid = tagTint([140, 130, 120], false);
+    assert.ok(mid.shift > 0 && mid.shift < 0.5, `expected a small shift, got ${mid.shift}`);
+    assert.ok(mid.colour.every((v, i) => v < [140, 130, 120][i]), 'darker than the artwork');
+    const under = (mean, tint, opacity) => mean.map((v, i) => v * (1 - opacity) + tint[i] * opacity);
+    assert.ok(contrastRatio(relativeLuminance(under([140, 130, 120], mid.colour, 0.55)), 1) >= 5 - 0.05);
+    // a bright poster under dark text keeps its colour
+    const bright = tagTint([210, 200, 190], true);
+    assert.ok(bright.colour.every((v, i) => Math.abs(v - [210, 200, 190][i]) <= 6));
+    // never moves the colour past the cap, and the hue is kept (a red stays red)
+    const red = tagTint([170, 40, 40], false);
+    assert.ok(red.colour[0] > red.colour[1] + 40);
+    assert.ok(tagTint([255, 255, 255], false).shift <= 0.8);
+    // near-black artwork still gets a visible tag, and white text stays readable on it
+    const black = tagTint([0, 0, 0], false);
+    const luma = (c) => (0.299 * c[0]) + (0.587 * c[1]) + (0.114 * c[2]);
+    assert.ok(luma(black.colour) >= 39, `expected a visible dark grey, got ${black.colour}`);
+    assert.ok(contrastRatio(relativeLuminance(black.colour), 1) > 5);
+});
+
+test('artwork: the dark tint is the original look (halfway to black, or a quarter toward white under dark text)', () => {
+    assert.deepEqual(darkTint([100, 80, 90], false), [50, 40, 45]);
+    assert.deepEqual(darkTint([200, 200, 200], true), [214, 214, 214]);
+    assert.deepEqual(darkTint([0, 0, 0], false), [0, 0, 0]);
+});
+
+test('artwork: tagTone tinted gives a clearly deeper tag than glass on the same mid-tone poster', async () => {
+    const width = 500, height = 750;
+    const { heightRatio, fontRatio } = LAYOUTS.poster.tag;
+    const image = await sharp({ create: { width, height, channels: 3, background: '#6a6a78' } }).png().toBuffer();
+    const fontSize = Math.round(Math.round(height * heightRatio) * fontRatio);
+    const tagWidth = Math.round(estimateTextWidth('Now Streaming', fontSize) + fontSize * 1.8);
+    const x = Math.round((width - tagWidth) / 2) + 14; // inside the left padding, clear of the text
+    const y = height - Math.round(height * heightRatio) + Math.round(height * heightRatio / 2);
+    const shade = async (tone) => {
+        const composites = await buildTagComposites(image, { width, height }, 'Now Streaming', heightRatio, fontRatio, null, tone);
+        const { data, info } = await sharp(image).composite(composites).raw().toBuffer({ resolveWithObject: true });
+        const o = (y * info.width + x) * info.channels;
+        return data[o] + data[o + 1] + data[o + 2];
+    };
+    const glass = await shade('glass');
+    const tinted = await shade('tinted');
+    assert.ok(glass > tinted + 60, `glass should be clearly brighter than tinted, got glass=${glass} tinted=${tinted}`);
+    assert.ok(Math.abs(glass - (0x6a * 2 + 0x78)) < 45, `glass should stay close to the poster's own colour, got ${glass}`);
 });
 
 test('artwork: landscape rank font is 30% of backdrop height', () => {
@@ -719,6 +770,17 @@ test('HTTP: AIOMetadata pattern routes compute tag and rank, then redirect', asy
         assert.equal(land.headers.location, '/backdrop/50.jpg?type=series&tag=none&rank=none&lang=en&logos=0&titleStyle=gradient-v9');
         const old = await app.request('/image/movie/3.png?ranked=1&listLang=en');
         assert.equal(old.headers.location, '/poster/3.png?type=movie&tag=just_added&rank=3&lang=en&logos=0');
+    });
+
+    await t.test('the dark tag tint is passed on, and dropped when no tag is drawn', async () => {
+        const tinted = await app.request('/image/movie/3.jpg?ranked=1&listLang=en&tagTone=tinted');
+        assert.equal(tinted.headers.location, '/poster/3.jpg?type=movie&tag=just_added&rank=3&lang=en&logos=0&tagTone=tinted');
+        const land = await app.request('/landscape/movie/3.jpg?tagTone=tinted');
+        assert.match(land.headers.location, /&titleStyle=gradient-v9&tagTone=tinted$/);
+        const noTag = await app.request('/image/movie/3.jpg?tag=none&tagTone=tinted');
+        assert.doesNotMatch(noTag.headers.location, /tagTone/);
+        const junk = await app.request('/image/movie/3.jpg?tagTone=%3Cb%3E');
+        assert.doesNotMatch(junk.headers.location, /tagTone/);
     });
 
     await t.test('explicit tag=none, no ranking, and landscape target', async () => {

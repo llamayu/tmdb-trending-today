@@ -25,12 +25,13 @@ function parseImageQuery(query = {}) {
         logos: query.logos === '1',
         textless: query.textless === '1',
         titleStyle: query.titleStyle === 'gradient-v9' ? 'gradient-v9' : undefined,
+        tagTone: query.tagTone === 'tinted' ? 'tinted' : 'glass',
     };
 }
 
 /** URL extension -> format. `.png` URLs keep returning PNG, so existing installs and saved patterns are unaffected. */
 const IMAGE_TYPES = Object.freeze({ png: 'image/png', jpg: 'image/jpeg' });
-const ARTWORK_CACHE_VERSION = 'tag-liquid-glass-v15';
+const ARTWORK_CACHE_VERSION = 'tag-tone-v17';
 
 /** Cache / single-flight key: built from validated values only, so junk query params can't multiply cache entries. */
 const imageKey = (kind, id, p) => [
@@ -45,6 +46,7 @@ const imageKey = (kind, id, p) => [
     p.logos ? 1 : 0,
     p.textless ? 1 : 0,
     p.titleStyle || '',
+    p.tagTone === 'tinted' ? 'tinted' : '',
 ].join('|');
 
 /** Which title a cache key belongs to ("movie-603"), so everything cached for one title can be found and cleared together. */

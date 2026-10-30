@@ -266,6 +266,52 @@ async function titleLogoContrast(imageBuffer, logoBuffer, left, top) {
     return (Math.max(logoMean, backgroundMean) + 0.05) / (Math.min(logoMean, backgroundMean) + 0.05);
 }
 
+// The tag's tint should be the artwork's own colour; it is only pushed darker (or lighter, under dark text) as far as the label needs.
+const TAG_TINT_OPACITY = 0.55; // how much of the glass the tint covers (the artwork still shows through the rest)
+const TAG_TEXT_CONTRAST = 5; // WCAG contrast ratio the label should reach against the tinted glass (4.5 is the usual minimum for text)
+const TAG_TINT_MAX_SHIFT = 0.8;
+const TAG_MIN_LUMA = 40; // very dark artwork still gets a tag you can see: a solid black strip would otherwise give a black pill on black
+const srgbToLinear = (v) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+const relativeLuminance = ([r, g, b]) => (0.2126 * srgbToLinear(r)) + (0.7152 * srgbToLinear(g)) + (0.0722 * srgbToLinear(b));
+const contrastRatio = (a, b) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+
+/**
+ * Tint colour for the tag: the artwork's average colour, shifted toward black (white text) or white (dark text) by the
+ * smallest amount that still gives the label enough contrast once laid over the glass. Most posters need no shift at all, so
+ * the tag keeps their true colours instead of always going darker.
+ * Returns { colour: [r, g, b], shift } where shift is 0 (the artwork's own colour) up to TAG_TINT_MAX_SHIFT.
+ */
+function tagTint(mean, darkText, opacity = TAG_TINT_OPACITY) {
+    const target = darkText ? 255 : 0;
+    const textLuminance = darkText ? relativeLuminance([18, 18, 18]) : 1;
+    let tint = mean;
+    let shift = 0;
+    for (; shift <= TAG_TINT_MAX_SHIFT + 1e-9; shift += 0.02) {
+        tint = mean.map((v) => v + (target - v) * shift);
+        const under = mean.map((v, i) => (v * (1 - opacity)) + (tint[i] * opacity)); // roughly what the label sits on
+        if (contrastRatio(relativeLuminance(under), textLuminance) >= TAG_TEXT_CONTRAST) break;
+    }
+    if (!darkText) { // lift near-black tints just enough to stay visible
+        const luma = (0.299 * tint[0]) + (0.587 * tint[1]) + (0.114 * tint[2]);
+        if (luma < TAG_MIN_LUMA) {
+            const t = (TAG_MIN_LUMA - luma) / (255 - luma);
+            tint = tint.map((v) => v + (255 - v) * t);
+        }
+    }
+    return { colour: tint.map(Math.round), shift: Math.min(shift, TAG_TINT_MAX_SHIFT) };
+}
+
+/**
+ * The original "dark" tint, kept as an option: the poster's bottom-half average pushed halfway to black (or a quarter of the
+ * way to white under dark text), laid over the glass at 70% opacity (88% when there is no glass behind it).
+ */
+function darkTint(mean, darkText) {
+    const target = darkText ? 255 : 0;
+    const mix = darkText ? 0.25 : 0.5;
+    return mean.map((v) => Math.round(v + (target - v) * mix));
+}
+const DARK_TINT_OPACITY = 0.7;
+
 // How far above the tag the artwork is looked at to decide what colour the tag's edge "reflects" (share of the image height)
 const REFLECT_LOOKUP = 0.1;
 const REFLECT_SEGMENTS = 5; // colours are taken per slice across the tag, so the highlight can shift hue from left to right
@@ -309,12 +355,25 @@ function reflectColour([r, g, b]) {
     return lifted.map((v) => Math.min(255, Math.round(v * scale)));
 }
 
+/** Average colour of the rendered glass behind the tag (a PNG), or null if it can't be read. */
+async function glassMean(glassBuffer) {
+    if (!glassBuffer) return null;
+    try {
+        const { channels } = await sharp(glassBuffer).stats();
+        const [r, g, b] = channels.length >= 3 ? channels : [channels[0], channels[0], channels[0]];
+        return { meanR: Math.round(r.mean), meanG: Math.round(g.mean), meanB: Math.round(b.mean) };
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Frosted-glass pill along the bottom edge, containing `tagText`. Returns sharp composite operations.
+ * `tone` is 'glass' (true to the artwork, the default) or 'tinted' (the original, deeper tint).
  * `reflectionSource` ({ buffer, raw }) is what the edge reflects when that differs from the bare artwork: the poster as it looks
  * with the title logo already drawn on it, since the logo sits just above the tag. The tint and text colour still come from the bare artwork.
  */
-async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, fontRatio, reflectionSource = null) {
+async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, fontRatio, reflectionSource = null, tone = 'glass') {
     const { width, height } = metadata;
     const tagHeight = Math.round(height * heightRatio);
     const fontSize = Math.round(tagHeight * fontRatio);
@@ -341,20 +400,21 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
         sampleReflection(reflectionSource?.buffer || imageBuffer, { left: extractLeft, top: bandTop, width: extractWidth, height: Math.max(0, extractTop - bandTop) }, REFLECT_SEGMENTS, reflectionSource?.raw || null),
     ]);
 
-    const { meanR, meanG, meanB, luminance } = colorInfo;
+    // "tinted" is the original look: the poster's bottom-half average, pushed toward black. "glass" (the default) is true to the
+    // artwork: the colour of the glass behind the tag, pushed darker or lighter only as far as the label needs for contrast.
+    const tinted = tone === 'tinted';
+    const behind = tinted ? colorInfo : ((await glassMean(blurBuffer)) || colorInfo);
+    const { meanR, meanG, meanB } = behind;
+    const luminance = (0.299 * meanR) + (0.587 * meanG) + (0.114 * meanB);
     const textColor = luminance > 140 ? '#121212' : '#ffffff';
-
-    // Bright artwork gets a light tint with dark text; everything else gets a deep tint with white text,
-    // so the label keeps strong contrast whatever the poster looks like.
     const darkText = textColor === '#121212';
-    const blendTarget = darkText ? 255 : 0;
-    const mix = darkText ? 0.25 : 0.5;
-    const adjR = Math.round(meanR + (blendTarget - meanR) * mix);
-    const adjG = Math.round(meanG + (blendTarget - meanG) * mix);
-    const adjB = Math.round(meanB + (blendTarget - meanB) * mix);
+    const tintOpacity = blurBuffer ? (tinted ? DARK_TINT_OPACITY : TAG_TINT_OPACITY) : 0.88; // without the glass behind it, the tint carries the whole look
+    const [adjR, adjG, adjB] = tinted
+        ? darkTint([meanR, meanG, meanB], darkText)
+        : tagTint([meanR, meanG, meanB], darkText, tintOpacity).colour;
 
     const tagFillColor = `rgb(${adjR}, ${adjG}, ${adjB})`;
-    let tagFillOpacity = '0.7';
+    let tagFillOpacity = String(tintOpacity);
     const composites = [];
 
     if (blurBuffer) {
@@ -365,8 +425,6 @@ async function buildTagComposites(imageBuffer, metadata, tagText, heightRatio, f
             .png()
             .toBuffer();
         composites.push({ input: shapedBlur, top: extractTop, left: extractLeft });
-    } else {
-        tagFillOpacity = '0.88';
     }
 
     // Light edge along the top, the rounded corners and down both sides. Its colour comes from the artwork just above the tag
@@ -574,7 +632,7 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
     }
 
     /**
-     * @param {{kind:'poster'|'backdrop', id:string, type:'movie'|'series', tag:string, rank:string, lang:string, logos:boolean, textless?:boolean, format?:'png'|'jpg'}} params
+     * @param {{kind:'poster'|'backdrop', id:string, type:'movie'|'series', tag:string, tagTone?:'glass'|'tinted', rank:string, lang:string, logos:boolean, textless?:boolean, format?:'png'|'jpg'}} params
      *        (already validated by the caller; format defaults to png)
      * @returns {Promise<{kind:'image', buffer:Buffer} | {kind:'redirect', url:string} | {kind:'placeholder', buffer:Buffer}>}
      */
@@ -678,7 +736,7 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
                     logger.warn?.(`Tag reflection fell back to the bare artwork: ${err.message}`);
                 }
             }
-            const tagOps = tagText ? await buildTagComposites(base, meta, tagText, layout.tag.heightRatio, layout.tag.fontRatio, reflectionSource) : [];
+            const tagOps = tagText ? await buildTagComposites(base, meta, tagText, layout.tag.heightRatio, layout.tag.fontRatio, reflectionSource, params.tagTone === 'tinted' ? 'tinted' : 'glass') : [];
 
             const ops = [
                 ...(providerOps || []),
@@ -697,4 +755,4 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
     return { render };
 }
 
-module.exports = { createArtwork, LAYOUTS, escapeXml, estimateTextWidth, sampleBottomHalf, sampleReflection, reflectColour, buildTagComposites, buildRankComposite };
+module.exports = { createArtwork, LAYOUTS, escapeXml, estimateTextWidth, sampleBottomHalf, sampleReflection, reflectColour, tagTint, darkTint, contrastRatio, relativeLuminance, buildTagComposites, buildRankComposite };

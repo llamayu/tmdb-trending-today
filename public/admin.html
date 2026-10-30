@@ -29,6 +29,13 @@ h1{font-size:26px;font-weight:700;letter-spacing:-.02em}
 .range button:active{transform:scale(.96)}
 .tools{display:flex;gap:10px;align-items:center;flex-wrap:nowrap;flex:none}
 @media(max-width:1180px){header,.tools{flex-wrap:wrap}}
+@media(max-width:760px){
+header{flex-direction:column;align-items:stretch}
+.tools{flex:1 1 auto;width:100%}
+.tools .range{display:flex;width:100%}
+.tools .range button{flex:1 1 auto;padding:7px 4px;white-space:nowrap}
+.tools .btn{flex:1 1 0}
+}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:12px}
 .card{background:var(--card);border:var(--hair) solid var(--line);border-radius:var(--r-card);padding:18px 20px}
 .card .k{color:var(--mut);font-size:13px;font-weight:500}
@@ -75,6 +82,8 @@ h1{font-size:26px;font-weight:700;letter-spacing:-.02em}
 .invnote{color:var(--dim);font-size:12.5px;margin-top:10px;line-height:1.5}.invnote b{color:var(--mut)}
 #invResult{margin-top:12px}#invResult:empty{display:none}
 .invline{padding:9px 14px;background:var(--well);border:var(--hair) solid var(--line);border-radius:var(--r-group);font-size:14px;margin-bottom:8px}
+.invform input.ok,.invform input.ok:focus-visible{border-color:var(--ok);outline:2px solid var(--ok);outline-offset:2px}
+.invform input.bad,.invform input.bad:focus-visible{border-color:var(--ring);outline:2px solid var(--ring);outline-offset:2px}
 .invline a{color:var(--fg)}.invline .why{display:block;color:var(--dim);font-size:12.5px;margin-top:3px}
 .empty{color:var(--dim);font-size:14px;padding:6px 2px}
 .splitbar .c{background:#ffb84d}.splitbar .d{background:#b57cff}.splitbar .e{background:transparent}
@@ -745,19 +754,27 @@ document.getElementById('invType').addEventListener('keydown', (e) => {
   target.focus();
 });
 const plural = (n, one, many) => fmt(n) + ' ' + (n === 1 ? one : many);
+let flashTimer;
+function flash(ok) {
+  const i = $('invId');
+  clearTimeout(flashTimer);
+  i.classList.remove('ok', 'bad');
+  i.classList.add(ok ? 'ok' : 'bad');
+  flashTimer = setTimeout(() => i.classList.remove('ok', 'bad'), 3000);
+}
 async function clearItem(e) {
   e.preventDefault();
   const box = $('invResult');
   const id = $('invId').value.trim();
   box.replaceChildren();
-  if (!/^[1-9][0-9]{0,8}$/.test(id)) { box.append(el('div', { class: 'invline' }, 'Enter a TMDB id (digits only).')); return; }
+  if (!/^[1-9][0-9]{0,8}$/.test(id)) { box.append(el('div', { class: 'invline' }, 'Enter a TMDB id (digits only).')); flash(false); return; }
   $('invGo').disabled = true;
   try {
     const res = await fetch('/admin/api/invalidate?id=' + encodeURIComponent(id) + '&type=' + encodeURIComponent(invType), { method: 'POST', headers: { Authorization: 'Bearer ' + token }, cache: 'no-store' });
     if (res.status === 401) { token = ''; try { sessionStorage.removeItem(KEY); } catch {} showLogin('Please sign in again.'); return; }
-    if (res.status === 429) { box.append(el('div', { class: 'invline' }, 'Too many attempts. Wait a minute and try again.')); return; }
+    if (res.status === 429) { box.append(el('div', { class: 'invline' }, 'Too many attempts. Wait a minute and try again.')); flash(false); return; }
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) { box.append(el('div', { class: 'invline' }, body.err || 'Something went wrong.')); return; }
+    if (!res.ok) { box.append(el('div', { class: 'invline' }, body.err || 'Something went wrong.')); flash(false); return; }
     let anything = false;
     for (const r of body.results) {
       const parts = [];
@@ -774,14 +791,17 @@ async function clearItem(e) {
     box.append(el('div', { class: 'invnote' }, anything
       ? 'The next request for this title is drawn from fresh TMDB data. Phones and apps that already hold the old image may keep showing it for up to 24 hours.'
       : 'Nothing was stored for this id, so the next request draws it fresh anyway.'));
+    flash(true);
     $('invId').select();
   } catch {
     box.append(el('div', { class: 'invline' }, 'Could not reach the server.'));
+    flash(false);
   } finally {
     $('invGo').disabled = false;
   }
 }
 $('invForm').addEventListener('submit', clearItem);
+$('invId').addEventListener('input', () => $('invId').classList.remove('ok', 'bad'));
 $('refresh').addEventListener('click', load);
 $('logout').addEventListener('click', () => { token = ''; try { sessionStorage.removeItem(KEY); } catch {} showLogin(); });
 const submit = () => { token = $('tokenInput').value.trim(); $('tokenInput').value = ''; if (token) load(); };
