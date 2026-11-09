@@ -616,6 +616,7 @@ function pickByLanguage(images, preferences) {
 function createArtwork({ tmdb, concurrency = 4, logger = console }) {
     const limit = createLimiter(concurrency);
     const placeholders = new Map();
+    const generatedArtworkBases = new Map();
 
     /** Locally generated stand-in for titles with no image (no dependency on an external placeholder service). */
     function placeholder(kind, format) {
@@ -629,6 +630,28 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
             placeholders.set(memo, encode(sharp(Buffer.from(svg)), format).toBuffer());
         }
         return placeholders.get(memo);
+    }
+
+    function generatedArtworkBase(kind) {
+        if (!generatedArtworkBases.has(kind)) {
+            const { width, height } = LAYOUTS[kind].placeholder;
+            const svg = `<svg ${XMLNS} width="${width}" height="${height}">
+                <defs>
+                    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+                        <stop offset="0%" stop-color="#26364a"/>
+                        <stop offset="100%" stop-color="#10151d"/>
+                    </linearGradient>
+                    <radialGradient id="glow">
+                        <stop offset="0%" stop-color="#58708a" stop-opacity=".35"/>
+                        <stop offset="100%" stop-color="#26364a" stop-opacity="0"/>
+                    </radialGradient>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#background)"/>
+                <ellipse cx="70%" cy="35%" rx="70%" ry="100%" fill="url(#glow)"/>
+            </svg>`;
+            generatedArtworkBases.set(kind, sharp(Buffer.from(svg)).png().toBuffer());
+        }
+        return generatedArtworkBases.get(kind);
     }
 
     /**
@@ -673,16 +696,18 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
             }
             image ||= standardImage;
         }
-        if (!image?.file_path) return { kind: 'placeholder', buffer: await placeholder(params.kind, format) };
+        const missingArtwork = !image?.file_path;
 
         // In textless mode, title logos also replace text on posters.
         const titleExpected = (params.textless || layout.titleLogo && params.lang !== 'null')
-            && image.iso_639_1 === null;
+            && image?.iso_639_1 === null;
         let titleLogo = null;
         if (titleExpected && images.logos?.length) {
             titleLogo = pickByLanguage(images.logos, [params.lang, originalLang, 'en']) || images.logos[0];
         }
-        const titleText = titleExpected ? details.title || details.name : null;
+        const titleText = missingArtwork
+            ? details.title || details.name
+            : titleExpected ? details.title || details.name : null;
         let providerCatalog;
         const networkName = details.networks?.[0]?.name;
         if (params.logos && tmdbType === 'tv' &&
@@ -698,10 +723,10 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
 
         const sourceSize = fallbackBackdrop ? LAYOUTS.backdrop.size : layout.size;
         const passthroughSize = fallbackBackdrop ? LAYOUTS.backdrop.passthroughSize : layout.passthroughSize;
-        const passthrough = { kind: 'redirect', url: tmdb.imageUrl(passthroughSize, image.file_path) };
-        if (!fallbackBackdrop && !tagText && !rankText && !providerInfo && !titleLogo && !titleText) return passthrough; // nothing to draw
+        const passthrough = missingArtwork ? null : { kind: 'redirect', url: tmdb.imageUrl(passthroughSize, image.file_path) };
+        if (!missingArtwork && !fallbackBackdrop && !tagText && !rankText && !providerInfo && !titleLogo && !titleText) return passthrough; // nothing to draw
 
-        let base = await tmdb.image(sourceSize, image.file_path);
+        let base = missingArtwork ? await generatedArtworkBase(params.kind) : await tmdb.image(sourceSize, image.file_path);
         if (fallbackBackdrop) {
             base = await sharp(base)
                 .resize({
@@ -745,7 +770,7 @@ function createArtwork({ tmdb, concurrency = 4, logger = console }) {
                 rankText ? buildRankComposite(layout, rankText, width, height) : null,
                 ...tagOps,
             ].filter(Boolean);
-            if (ops.length === 0) return fallbackBackdrop ? encode(sharp(base), format).toBuffer() : null;
+            if (ops.length === 0) return fallbackBackdrop || missingArtwork ? encode(sharp(base), format).toBuffer() : null;
             return encode(sharp(base).composite(ops), format).toBuffer();
         });
 

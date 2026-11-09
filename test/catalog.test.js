@@ -73,6 +73,22 @@ test('trending: language rules', async () => {
     assert.deepEqual(await ids(['ja', 'ko']), [2, 3]);
 });
 
+test('trending: excludes talk shows and fills the series catalog', async () => {
+    const shows = [
+        makeShow(59941, { genres: [10767, 35] }),
+        ...Array.from({ length: 11 }, (_, i) => makeShow(i + 2)),
+    ];
+    const { trending, catalog } = setup({ shows });
+
+    const entries = await trending.list({ type: 'series', langs: ['en'], digitalOnly: false });
+    const metas = (await catalog.getCatalog('series')).metas;
+
+    assert.deepEqual(entries.slice(0, 10).map(({ item }) => item.id), Array.from({ length: 10 }, (_, i) => i + 2));
+    assert.equal(await trending.rankOf({ type: 'series', id: 59941, langs: ['en'], digitalOnly: false }), 'none');
+    assert.equal(metas.length, 10);
+    assert.equal(metas.some(({ _tmdbId }) => _tmdbId === 59941), false);
+});
+
 test('trending: concurrent callers share one build; rankOf agrees with the list', async () => {
     const movies = Array.from({ length: 25 }, (_, i) => makeMovie(i + 1));
     const { trending, fake } = setup({ movies });

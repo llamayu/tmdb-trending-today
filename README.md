@@ -27,6 +27,7 @@ so there is no database and no accounts. One server can host as many different s
 ## Features
 
 - **Two catalogs**, ten titles each, refreshed from TMDB's day-trending lists (cached for 15 minutes).
+- **Talk shows are excluded** from Top Shows Today.
 - **Graphic tags** drawn onto the artwork: upcoming releases, new on streaming, new series/season/episode, finales and more.
   The rules are documented in [TAGS.md](TAGS.md) and can be tuned in one place.
 - **Rank badges**: a large silver number on each poster or background.

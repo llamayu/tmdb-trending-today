@@ -5,6 +5,7 @@ const { computeMovieTag, computeSeriesTag, staleSeasonToLookUp } = require('./ta
 
 /** The catalog shows this many titles; rank badges are numbered against the same list. */
 const CATALOG_SIZE = 10;
+const TALK_SHOW_GENRE_ID = 10767;
 
 // ─── Movie release dates ─────────────────────────────────────────────────────
 
@@ -67,6 +68,7 @@ function createTrending({ tmdb, now = () => new Date(), maxPages = 10, ttlMs = 1
             for (const item of data.results) {
                 if (seen.has(item.id)) continue;
                 seen.add(item.id);
+                if (type === 'series' && item.genre_ids?.includes(TALK_SHOW_GENRE_ID)) continue;
                 if (matchesLanguage(item.original_language, langs)) entries.push({ item, releases: null });
             }
 

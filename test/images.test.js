@@ -513,13 +513,29 @@ test('artwork: a failing watch-providers lookup only costs the logo', async () =
     assert.equal((await artwork.render({ ...base, logos: true })).kind, 'redirect');
 });
 
-test('artwork: no image on TMDB -> local placeholder, not a third-party URL', async () => {
+test('artwork: missing TMDB artwork -> titled poster and backdrop with overlays', async () => {
     const { artwork } = artworkFor({ movies: [makeMovie(1, { images: { posters: [], backdrops: [], logos: [] } })] });
-    const out = await artwork.render({ ...base, tag: 'coming_soon' });
-    assert.equal(out.kind, 'placeholder');
-    assert.deepEqual([(await png(out.buffer)).width, (await png(out.buffer)).height], [500, 750]);
-    const backdrop = await artwork.render({ ...base, kind: 'backdrop' });
-    assert.deepEqual([(await png(backdrop.buffer)).width, (await png(backdrop.buffer)).height], [1280, 720]);
+    for (const [kind, width, height, titleArea] of [
+        ['poster', 500, 750, { left: 40, top: 560, width: 420, height: 110 }],
+        ['backdrop', 1280, 720, { left: 50, top: 430, width: 1050, height: 170 }],
+    ]) {
+        const out = await artwork.render({ ...base, kind, tag: 'coming_soon', rank: '1' });
+        assert.equal(out.kind, 'image');
+        assert.deepEqual([(await png(out.buffer)).width, (await png(out.buffer)).height], [width, height]);
+        const { data, info } = await sharp(out.buffer).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+        let titlePixels = 0;
+        for (let y = titleArea.top; y < titleArea.top + titleArea.height; y++) {
+            for (let x = titleArea.left; x < titleArea.left + titleArea.width; x++) {
+                const offset = (y * info.width + x) * info.channels;
+                if (data[offset] > 220 && data[offset + 1] > 220 && data[offset + 2] > 220) titlePixels++;
+            }
+        }
+        assert.ok(titlePixels > 100, `generated ${kind} should include the title text`);
+    }
+    const withOverlays = await artwork.render({ ...base, kind: 'backdrop', tag: 'coming_soon', rank: '1' });
+    const withoutOverlays = await artwork.render({ ...base, kind: 'backdrop' });
+    assert.equal(withoutOverlays.kind, 'image');
+    assert.notDeepEqual(withOverlays.buffer, withoutOverlays.buffer);
 });
 
 test('artwork: image language preference (requested, then original, then textless, then English)', async () => {
